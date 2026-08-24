@@ -1,0 +1,16 @@
+# Проект собирается и живёт только под Windows: в рабочей копии — CRLF,
+# в репозитории — LF. Так перевод строк не зависит от core.autocrlf у клонирующего.
+* text=auto eol=crlf
+
+# Бинарные файлы нормализовать нельзя — испортятся.
+*.ico binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.mp3 binary
+*.wav binary
+*.onnx binary
+*.dll binary
+*.exe binary
+*.pdb binary
