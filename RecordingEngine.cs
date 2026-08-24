@@ -27,7 +27,7 @@ public sealed class RecordingEngine : IDisposable
     private const int MixChannels = 2;
     private const int TapRate = 16000; // частота для распознавания речи
 
-    private readonly WasapiLoopbackCapture _systemCapture;
+    private readonly IWaveIn _systemCapture;
     private readonly WasapiCapture _micCapture;
     private readonly BufferedWaveProvider _systemBuffer;
     private readonly BufferedWaveProvider _micBuffer;
@@ -73,12 +73,21 @@ public sealed class RecordingEngine : IDisposable
     /// <summary>Поток системного звука 16 kHz mono для распознавания (если tap'ы включены).</summary>
     public ISampleProvider? SystemTap16k { get; }
 
-    public RecordingEngine(MMDevice renderDevice, MMDevice captureDevice, string outputPath, int bitrateKbps,
-        bool enableTranscriptionTaps = false)
+    /// <param name="renderDevice">
+    /// Устройство вывода для записи всего системного звука. Не нужно, если задан systemProcessId.
+    /// </param>
+    /// <param name="systemProcessId">
+    /// PID приложения, звук которого писать вместо всего устройства (см. ProcessLoopbackCapture).
+    /// </param>
+    public RecordingEngine(MMDevice? renderDevice, MMDevice captureDevice, string outputPath, int bitrateKbps,
+        bool enableTranscriptionTaps = false, int? systemProcessId = null)
     {
         OutputPath = outputPath;
 
-        _systemCapture = new WasapiLoopbackCapture(renderDevice);
+        _systemCapture = systemProcessId is int pid
+            ? new Services.ProcessLoopbackCapture(pid)
+            : new WasapiLoopbackCapture(renderDevice ?? throw new ArgumentNullException(nameof(renderDevice),
+                "Нужно устройство вывода или приложение-источник."));
         _micCapture = new WasapiCapture(captureDevice);
 
         _systemBuffer = CreateBuffer(_systemCapture.WaveFormat);

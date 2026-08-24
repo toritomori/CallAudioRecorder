@@ -9,6 +9,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media.Animation;
 using System.Windows.Threading;
@@ -52,6 +53,7 @@ public partial class MainWindow : Window
         _uiTimer.Tick += UiTimer_Tick;
 
         LoadDevices();
+        LoadSystemSources();
         _ = LoadOllamaModelsAsync();
 
         Closed += (_, _) =>
@@ -92,6 +94,48 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// Заполняет список источников системного звука: всё устройство вывода либо одно приложение.
+    /// Выбор по возможности сохраняется — список пересобирается каждый раз, когда его открывают.
+    /// </summary>
+    private void LoadSystemSources()
+    {
+        int? current = (SystemSource.SelectedItem as SystemSourceItem)?.Window?.ProcessId;
+
+        SystemSource.Items.Clear();
+        var wholeDevice = new SystemSourceItem(null);
+        SystemSource.Items.Add(wholeDevice);
+        foreach (var window in AudioWindows.Enumerate())
+            SystemSource.Items.Add(new SystemSourceItem(window));
+
+        SystemSource.SelectedItem = SystemSource.Items.OfType<SystemSourceItem>()
+            .FirstOrDefault(item => current is not null && item.Window?.ProcessId == current) ?? wholeDevice;
+    }
+
+    private void SystemSource_DropDownOpened(object sender, EventArgs e) => LoadSystemSources();
+
+    /// <summary>Жив ли процесс: PID из списка мог протухнуть, пока пользователь выбирал.</summary>
+    private static bool ProcessAlive(int processId)
+    {
+        try
+        {
+            using var process = System.Diagnostics.Process.GetProcessById(processId);
+            return !process.HasExited;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void SystemSource_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (RenderDevices is null) return; // событие прилетает и во время InitializeComponent
+        // Когда звук берётся из приложения, устройство вывода ни на что не влияет.
+        bool wholeDevice = (SystemSource.SelectedItem as SystemSourceItem)?.Window is null;
+        RenderDevices.IsEnabled = wholeDevice && _engine is null;
+    }
+
     private async Task LoadOllamaModelsAsync()
     {
         try
@@ -119,10 +163,23 @@ public partial class MainWindow : Window
 
     private async Task StartRecordingAsync()
     {
-        if (RenderDevices.SelectedItem is not DeviceItem render ||
-            CaptureDevices.SelectedItem is not DeviceItem capture)
+        var sourceWindow = (SystemSource.SelectedItem as SystemSourceItem)?.Window;
+        if (CaptureDevices.SelectedItem is not DeviceItem capture)
         {
-            Status.Text = "Выберите устройство вывода и микрофон.";
+            Status.Text = "Выберите микрофон.";
+            return;
+        }
+        if (sourceWindow is null && RenderDevices.SelectedItem is not DeviceItem)
+        {
+            Status.Text = "Выберите устройство вывода или приложение-источник.";
+            return;
+        }
+
+        // Окно могло закрыться, пока список висел на экране, — PID стал бы чужим.
+        if (sourceWindow is not null && !ProcessAlive(sourceWindow.ProcessId))
+        {
+            Status.Text = $"Приложение «{sourceWindow.ProcessName}» уже закрыто. Обновите список источников.";
+            LoadSystemSources();
             return;
         }
 
@@ -156,7 +213,9 @@ public partial class MainWindow : Window
 
             try
             {
-                _engine = new RecordingEngine(render.Device, capture.Device, path, bitrate, transcribe)
+                var renderDevice = sourceWindow is null ? ((DeviceItem)RenderDevices.SelectedItem).Device : null;
+                _engine = new RecordingEngine(renderDevice, capture.Device, path, bitrate, transcribe,
+                    sourceWindow?.ProcessId)
                 {
                     SystemGain = (float)SystemGain.Value,
                     MicGain = (float)MicGain.Value
@@ -289,8 +348,11 @@ public partial class MainWindow : Window
 
         try
         {
+            // Длинный транскрипт корректор гонит партиями — показываем, сколько реплик уже прошло.
+            var progress = new Progress<int>(done =>
+                Status.Text = $"Исправляю текст ({model}): {done} из {transcript.Count}…");
             var fixedEntries = await TranscriptCorrector.CorrectAsync(
-                _ollama, model, transcript, GlossaryBox.Text, progress: null, ct: _summaryCts.Token);
+                _ollama, model, transcript, GlossaryBox.Text, progress, _summaryCts.Token);
 
             _finalTranscript = fixedEntries;
             _transcript.Clear();
@@ -411,8 +473,12 @@ public partial class MainWindow : Window
         try
         {
             var sb = new StringBuilder();
-            await foreach (var chunk in _ollama.ChatStreamAsync(
-                model, SummaryPrompt.System, SummaryPrompt.BuildUserMessage(transcript), ct))
+            var outcome = new ChatOutcome();
+            // Длинная встреча не влезает в окно локальной модели — SummaryComposer идёт по частям
+            // и сообщает через stage, на какой он сейчас.
+            var stage = new Progress<string>(text => Status.Text = $"{text} ({model})");
+            await foreach (var chunk in SummaryComposer.ComposeAsync(
+                _ollama, model, transcript, stage, outcome, ct))
             {
                 sb.Append(chunk);
                 SummaryBox.AppendText(chunk);
@@ -420,7 +486,9 @@ public partial class MainWindow : Window
             }
 
             File.WriteAllText(SummaryPath(_lastFile), sb.ToString(), Encoding.UTF8);
-            Status.Text = $"Итоги сохранены: {Path.GetFileName(SummaryPath(_lastFile))}";
+            Status.Text = outcome.HitContextLimit
+                ? $"Итоги оборвались: модели «{model}» не хватило окна контекста. Сохранено: {Path.GetFileName(SummaryPath(_lastFile))}"
+                : $"Итоги сохранены: {Path.GetFileName(SummaryPath(_lastFile))}";
         }
         catch (OperationCanceledException)
         {
@@ -454,7 +522,8 @@ public partial class MainWindow : Window
         StopIcon.Visibility = recording ? Visibility.Visible : Visibility.Collapsed;
         RecDot.Visibility = recording ? Visibility.Visible : Visibility.Hidden;
         Hint.Text = recording ? "идёт запись — нажмите, чтобы остановить" : "нажмите, чтобы начать запись";
-        RenderDevices.IsEnabled = CaptureDevices.IsEnabled = SettingsPanel.IsEnabled = !recording;
+        SystemSource.IsEnabled = CaptureDevices.IsEnabled = SettingsPanel.IsEnabled = !recording;
+        RenderDevices.IsEnabled = !recording && (SystemSource.SelectedItem as SystemSourceItem)?.Window is null;
         if (recording) OpenFolderBtn.Visibility = Visibility.Collapsed;
 
         var pulse = (Storyboard)Resources["Pulse"];
@@ -518,5 +587,11 @@ public partial class MainWindow : Window
     private sealed record DeviceItem(MMDevice Device)
     {
         public override string ToString() => Device.FriendlyName;
+    }
+
+    /// <summary>Источник системного звука: всё устройство вывода (Window = null) или окно приложения.</summary>
+    private sealed record SystemSourceItem(AudioWindow? Window)
+    {
+        public override string ToString() => Window?.ToString() ?? "Всё устройство вывода";
     }
 }

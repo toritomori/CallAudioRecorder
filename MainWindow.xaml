@@ -132,14 +132,22 @@
                                 <Grid.RowDefinitions>
                                     <RowDefinition/>
                                     <RowDefinition/>
+                                    <RowDefinition/>
                                 </Grid.RowDefinitions>
 
-                                <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource Icon}" Text="&#xE767;" Margin="2,0,0,8"/>
-                                <ComboBox  Grid.Row="0" Grid.Column="1" x:Name="RenderDevices"
+                                <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource Icon}" Text="&#xE7C4;" Margin="2,0,0,8"/>
+                                <ComboBox  Grid.Row="0" Grid.Column="1" x:Name="SystemSource"
+                                           Style="{StaticResource DarkCombo}" Margin="0,0,0,8"
+                                           ToolTip="Откуда брать звук собеседника: всё устройство вывода или одно приложение"
+                                           DropDownOpened="SystemSource_DropDownOpened"
+                                           SelectionChanged="SystemSource_SelectionChanged"/>
+
+                                <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource Icon}" Text="&#xE767;" Margin="2,0,0,8"/>
+                                <ComboBox  Grid.Row="1" Grid.Column="1" x:Name="RenderDevices"
                                            Style="{StaticResource DarkCombo}" Margin="0,0,0,8"/>
 
-                                <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource Icon}" Text="&#xE720;" Margin="2,0,0,0"/>
-                                <ComboBox  Grid.Row="1" Grid.Column="1" x:Name="CaptureDevices"
+                                <TextBlock Grid.Row="2" Grid.Column="0" Style="{StaticResource Icon}" Text="&#xE720;" Margin="2,0,0,0"/>
+                                <ComboBox  Grid.Row="2" Grid.Column="1" x:Name="CaptureDevices"
                                            Style="{StaticResource DarkCombo}"/>
                             </Grid>
                         </StackPanel>
