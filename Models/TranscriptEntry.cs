@@ -6,7 +6,7 @@ namespace CallAudioRecorder.Models;
 public sealed record TranscriptEntry(string Speaker, string Text, TimeSpan StartTime, TimeSpan Duration = default)
 {
     /// <summary>Реплика с моего микрофона (иначе — системный звук, собеседник).</summary>
-    public bool IsMe => Speaker == "Я";
+    public bool IsMe => Services.Languages.IsMeLabel(Speaker);
 
     /// <summary>Момент окончания реплики.</summary>
     public TimeSpan End => StartTime + Duration;

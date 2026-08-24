@@ -23,11 +23,14 @@ public partial class App : Application
             return;
         }
 
-        // Спайк: замер скорости распознавания GigaAM v3.
-        // Использование: CallAudioRecorder.exe --stt-test <лог-файл> <wav-файл>
+        // Спайк: замер скорости распознавания (GigaAM v3 или Parakeet TDT).
+        // Использование: CallAudioRecorder.exe --stt-test <лог-файл> <wav-файл> [ru|en]
         if (e.Args.Length >= 3 && e.Args[0] == "--stt-test")
         {
-            SttSpike.Run(e.Args[1], e.Args[2]);
+            var sttLang = e.Args.Length >= 4 && e.Args[3].StartsWith("en", StringComparison.OrdinalIgnoreCase)
+                ? Services.Languages.English
+                : Services.Languages.Russian;
+            SttSpike.Run(e.Args[1], e.Args[2], sttLang);
             Shutdown();
             return;
         }
@@ -46,7 +49,7 @@ public partial class App : Application
         if (e.Args.Length >= 2 && e.Args[0] == "--stt-selftest")
         {
             int seconds = e.Args.Length >= 3 && int.TryParse(e.Args[2], out var s2) ? s2 : 15;
-            RunSttSelfTest(e.Args[1], seconds);
+            RunSttSelfTest(e.Args[1], seconds, LanguageArg(e.Args, 3));
             Shutdown();
             return;
         }
@@ -57,7 +60,8 @@ public partial class App : Application
         // Использование: CallAudioRecorder.exe --fix-test <лог-файл> <модель>
         if (e.Args.Length >= 3 && e.Args[0] == "--fix-test")
         {
-            System.Threading.Tasks.Task.Run(() => RunFixTest(e.Args[1], e.Args[2]))
+            var fixLang = LanguageArg(e.Args, 3);
+            System.Threading.Tasks.Task.Run(() => RunFixTest(e.Args[1], e.Args[2], fixLang))
                 .GetAwaiter().GetResult();
             Shutdown();
             return;
@@ -68,6 +72,15 @@ public partial class App : Application
             // Task.Run — чтобы await не пытался вернуться в заблокированный Dispatcher
             System.Threading.Tasks.Task.Run(() => RunSummaryTest(e.Args[1], e.Args[2]))
                 .GetAwaiter().GetResult();
+            Shutdown();
+            return;
+        }
+
+        // Снимок окна + проверка вёрстки на наложения блоков.
+        // Использование: CallAudioRecorder.exe --ui-shot <png-файл> <лог-файл>
+        if (e.Args.Length >= 3 && e.Args[0] == "--ui-shot")
+        {
+            UiShot.Run(e.Args[1], e.Args[2]);
             Shutdown();
             return;
         }
@@ -89,7 +102,8 @@ public partial class App : Application
         if (e.Args.Length >= 3 && e.Args[0] == "--summary-long-test")
         {
             int minutes = e.Args.Length >= 4 && int.TryParse(e.Args[3], out var m) ? m : 60;
-            System.Threading.Tasks.Task.Run(() => RunSummaryLongTest(e.Args[1], e.Args[2], minutes))
+            var longLang = LanguageArg(e.Args, 4);
+            System.Threading.Tasks.Task.Run(() => RunSummaryLongTest(e.Args[1], e.Args[2], minutes, longLang))
                 .GetAwaiter().GetResult();
             Shutdown();
             return;
@@ -98,22 +112,44 @@ public partial class App : Application
         new MainWindow().Show();
     }
 
-    private static async System.Threading.Tasks.Task RunFixTest(string logPath, string model)
+    /// <summary>Язык из аргументов командной строки: «en»/«english» → английский, иначе русский.</summary>
+    private static Services.LanguageProfile LanguageArg(string[] args, int index) =>
+        args.Length > index && args[index].StartsWith("en", StringComparison.OrdinalIgnoreCase)
+            ? Services.Languages.English
+            : Services.Languages.Russian;
+
+    private static async System.Threading.Tasks.Task RunFixTest(string logPath, string model,
+        Services.LanguageProfile? language = null)
     {
         try
         {
-            // Реплики в том виде, в каком их обычно портит русскоязычный ASR
-            var raw = new List<Models.TranscriptEntry>
-            {
-                new("Я", "надо задеплоить фичу на прод через гитхаб экшенс до дед лайна", TimeSpan.FromSeconds(5)),
-                new("Собеседник", "я посмотрю пул реквест и подниму кубернетес кластер", TimeSpan.FromSeconds(15)),
-                new("Я", "эйпиай отдаёт пятисотку когда бэкенд не отвечает", TimeSpan.FromSeconds(25)),
-                new("Собеседник", "давай обсудим на следующем спринт ревью", TimeSpan.FromSeconds(35)),
-            };
+            var profile = language ?? Services.Languages.Russian;
+            bool english = profile.Language == Services.TranscriptionLanguage.English;
+
+            // Реплики в том виде, в каком их обычно портит ASR соответствующего языка
+            var raw = english
+                ? new List<Models.TranscriptEntry>
+                {
+                    new("Me", "we need to deploy the feature to prod via github actions before the dead line",
+                        TimeSpan.FromSeconds(5)),
+                    new("Speaker", "i will review the pull request and spin up the kubernetes cluster",
+                        TimeSpan.FromSeconds(15)),
+                    new("Me", "the api returns a five hundred when the backend does not respond",
+                        TimeSpan.FromSeconds(25)),
+                    new("Speaker", "lets discuss it at the next sprint review", TimeSpan.FromSeconds(35)),
+                }
+                : new List<Models.TranscriptEntry>
+                {
+                    new("Я", "надо задеплоить фичу на прод через гитхаб экшенс до дед лайна", TimeSpan.FromSeconds(5)),
+                    new("Собеседник", "я посмотрю пул реквест и подниму кубернетес кластер", TimeSpan.FromSeconds(15)),
+                    new("Я", "эйпиай отдаёт пятисотку когда бэкенд не отвечает", TimeSpan.FromSeconds(25)),
+                    new("Собеседник", "давай обсудим на следующем спринт ревью", TimeSpan.FromSeconds(35)),
+                };
 
             using var ollama = new Services.OllamaClient();
             var fixedEntries = await Services.TranscriptCorrector.CorrectAsync(
-                ollama, model, raw, "GitHub Actions, Kubernetes, API, deadline, pull request, sprint review");
+                ollama, model, raw, "GitHub Actions, Kubernetes, API, deadline, pull request, sprint review",
+                progress: null, language: profile);
 
             var sb = new System.Text.StringBuilder("OK\n--- БЫЛО ---\n");
             foreach (var en in raw) sb.AppendLine(en.ToString());
@@ -237,11 +273,13 @@ public partial class App : Application
     /// в окно локальной модели не влезают: раньше Ollama урезал промпт и ответ обрывался
     /// на нескольких строках. Проверяем, что все пять разделов итогов на месте.
     /// </summary>
-    private static async System.Threading.Tasks.Task RunSummaryLongTest(string logPath, string model, int minutes)
+    private static async System.Threading.Tasks.Task RunSummaryLongTest(string logPath, string model, int minutes,
+        Services.LanguageProfile? language = null)
     {
         try
         {
-            var transcript = SyntheticTranscript(minutes);
+            var profile = language ?? Services.Languages.Russian;
+            var transcript = SyntheticTranscript(minutes, profile);
             var text = string.Join("\n", transcript);
 
             using var ollama = new Services.OllamaClient();
@@ -252,24 +290,20 @@ public partial class App : Application
 
             var started = DateTime.Now;
             await foreach (var chunk in Services.SummaryComposer.ComposeAsync(
-                ollama, model, transcript, stage, outcome))
+                ollama, model, transcript, stage, outcome, profile))
             {
                 sb.Append(chunk);
             }
             var answer = sb.ToString();
 
-            string[] sections =
-            [
-                "## Краткое резюме", "## Ключевые темы и решения",
-                "## Задачи", "## Открытые вопросы", "## Следующие шаги"
-            ];
+            var sections = Services.SummaryPrompt.SectionsFor(profile);
             var missing = new List<string>();
             foreach (var section in sections)
                 if (!answer.Contains(section, StringComparison.Ordinal)) missing.Add(section);
 
             bool ok = missing.Count == 0 && !outcome.HitContextLimit;
             var log = new System.Text.StringBuilder(ok ? "OK\n" : "FAIL\n");
-            log.AppendLine($"минут={minutes} реплик={transcript.Count} " +
+            log.AppendLine($"язык={profile.DisplayName} минут={minutes} реплик={transcript.Count} " +
                            $"токенов_на_входе≈{Services.OllamaClient.EstimateTokens(text)}");
             log.AppendLine($"done_reason={outcome.DoneReason} длина_ответа={answer.Length} " +
                            $"время={(DateTime.Now - started).TotalSeconds:F0}с");
@@ -285,8 +319,29 @@ public partial class App : Application
     }
 
     /// <summary>Синтетический транскрипт заданной длительности: реплика раз в ~8 секунд.</summary>
-    private static List<Models.TranscriptEntry> SyntheticTranscript(int minutes)
+    private static List<Models.TranscriptEntry> SyntheticTranscript(int minutes, Services.LanguageProfile profile)
     {
+        bool english = profile.Language == Services.TranscriptionLanguage.English;
+
+        string[] mineEn =
+        [
+            "Let's start with the status of the payment gateway integration.",
+            "I closed the authorisation task yesterday, the tests are still pending.",
+            "I suggest moving this logic into a separate service, it will be easier to maintain.",
+            "We are on track for Friday unless something else comes up.",
+            "Let's agree the report goes out before the end of the month.",
+            "There was a bug with timeouts, I fixed it but it needs a review.",
+        ];
+        string[] theirsEn =
+        [
+            "Agreed, but we need to decide who owns the database migration.",
+            "I will look at the load and come back with numbers tomorrow.",
+            "The client asked for a spreadsheet export, that is a big piece of work.",
+            "I will bring the staging environment up by Thursday, it is missing access rights.",
+            "Let's move the design question to the next meeting.",
+            "Production went down twice this week, we need to find the root cause.",
+        ];
+
         string[] mine =
         [
             "Давайте начнём со статуса по интеграции с платёжным шлюзом.",
@@ -310,8 +365,13 @@ public partial class App : Application
         var random = new Random(42);
         for (int i = 0, count = minutes * 60 / 8; i < count; i++)
         {
-            var speaker = i % 3 == 0 ? "Я" : i % 3 == 1 ? "Собеседник 1" : "Собеседник 2";
-            var pool = speaker == "Я" ? mine : theirs;
+            var speaker = i % 3 == 0 ? profile.MeLabel
+                        : i % 3 == 1 ? profile.NumberedOther(1)
+                                     : profile.NumberedOther(2);
+            bool isMine = speaker == profile.MeLabel;
+            var pool = english
+                ? (isMine ? mineEn : theirsEn)
+                : (isMine ? mine : theirs);
             entries.Add(new Models.TranscriptEntry(
                 speaker, pool[random.Next(pool.Length)],
                 TimeSpan.FromSeconds(i * 8), TimeSpan.FromSeconds(7)));
@@ -319,7 +379,7 @@ public partial class App : Application
         return entries;
     }
 
-    private static void RunSttSelfTest(string logPath, int seconds)
+    private static void RunSttSelfTest(string logPath, int seconds, Services.LanguageProfile? language = null)
     {
         try
         {
@@ -330,7 +390,7 @@ public partial class App : Application
             var mp3Path = Path.Combine(Path.GetTempPath(), $"sttselftest_{DateTime.Now:HHmmss}.mp3");
             System.Collections.Generic.IReadOnlyList<Models.TranscriptEntry> entries;
             using (var engine = new RecordingEngine(render, capture, mp3Path, 192, enableTranscriptionTaps: true))
-            using (var stt = new Services.TranscriptionService(diarizeSpeakers: true))
+            using (var stt = new Services.TranscriptionService(language, diarizeSpeakers: true))
             {
                 stt.Start(engine.MicTap16k!, engine.SystemTap16k!, () => engine.Elapsed);
                 engine.Start();

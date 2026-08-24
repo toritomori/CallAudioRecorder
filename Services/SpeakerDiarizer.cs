@@ -56,15 +56,20 @@ public sealed class SpeakerDiarizer : IDisposable
 
     private readonly SpeakerEmbeddingExtractor _extractor;
     private readonly List<Profile> _profiles = new();
-    private string _lastSpeaker = "Собеседник 1";
+    private readonly LanguageProfile _language;
+    private string _lastSpeaker;
 
     /// <summary>Косинусная близость последнего Identify к лучшему профилю (для калибровки порога).</summary>
     public float LastBestScore { get; private set; }
 
     public int SpeakerCount => _profiles.Count;
 
-    public SpeakerDiarizer(string modelPath)
+    /// <param name="language">Определяет метки спикеров: «Собеседник N» или «Speaker N».</param>
+    public SpeakerDiarizer(string modelPath, LanguageProfile? language = null)
     {
+        _language = language ?? Languages.Russian;
+        _lastSpeaker = _language.NumberedOther(1);
+
         var config = new SpeakerEmbeddingExtractorConfig
         {
             Model = modelPath,
@@ -103,7 +108,7 @@ public sealed class SpeakerDiarizer : IDisposable
         // короткий — прилипает к ближайшему, чтобы шумный embedding не плодил фантомов.
         if (best is null || canEnroll)
         {
-            var profile = new Profile($"Собеседник {_profiles.Count + 1}", emb);
+            var profile = new Profile(_language.NumberedOther(_profiles.Count + 1), emb);
             _profiles.Add(profile);
             return _lastSpeaker = profile.Name;
         }

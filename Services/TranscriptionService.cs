@@ -11,12 +11,12 @@ using SherpaOnnx;
 namespace CallAudioRecorder.Services;
 
 /// <summary>
-/// Живая транскрипция двух каналов (микрофон = «Я», система = «Собеседник»).
+/// Живая транскрипция двух каналов (микрофон = «Я»/«Me», система = «Собеседник»/«Speaker»).
 ///
 /// Схема: два «насоса» читают tap-потоки 16 kHz mono со скоростью реального времени
 /// (ReadFully=true ⇒ тишина идёт нулями, поэтому индекс сэмпла = время записи),
 /// каждый кормит свой Silero VAD; готовые речевые сегменты складываются в общую
-/// очередь и последовательно распознаются ОДНИМ OfflineRecognizer (GigaAM v3),
+/// очередь и последовательно распознаются ОДНИМ OfflineRecognizer (модель — по языку),
 /// чтобы не выедать CPU у MP3-пути.
 /// </summary>
 public sealed class TranscriptionService : IDisposable
@@ -63,6 +63,7 @@ public sealed class TranscriptionService : IDisposable
     private static readonly TimeSpan SegmentPadding = TimeSpan.FromSeconds(0.3);
 
     private readonly OfflineRecognizer _recognizer;
+    private readonly LanguageProfile _language;
     private SpeakerDiarizer? _diarizer;
     private readonly string _vadModelPath;
     private readonly string? _hotwordsFile;
@@ -88,26 +89,32 @@ public sealed class TranscriptionService : IDisposable
 
     public static string SpeakerModelPath => Path.Combine(ModelsRoot, "speaker_campplus_zh_en.onnx");
 
+    /// <param name="language">
+    /// Язык распознавания: под него выбирается модель (GigaAM v3 для русского,
+    /// Parakeet TDT для английского) и метки спикеров.
+    /// </param>
     /// <param name="hotwords">
-    /// Термины/имена для контекстного смещения — по одному на строку, КИРИЛЛИЦЕЙ
-    /// (словарь GigaAM почти не содержит латиницы). Латинское написание восстанавливает
-    /// LLM-коррекция, см. <see cref="TranscriptCorrector"/>.
+    /// Термины/имена для контекстного смещения — по одному на строку, в алфавите модели:
+    /// словарь GigaAM почти не содержит латиницы, английский Parakeet — кириллицы.
+    /// Латинское написание в русском транскрипте восстанавливает LLM-коррекция,
+    /// см. <see cref="TranscriptCorrector"/>.
     /// </param>
     /// <param name="diarizeSpeakers">
     /// Различать собеседников по голосу: реплики системного канала помечаются
-    /// «Собеседник 1», «Собеседник 2», … вместо общего «Собеседник».
+    /// «Собеседник 1», «Собеседник 2», … (или «Speaker N») вместо общего «Собеседник».
     /// </param>
-    public TranscriptionService(IEnumerable<string>? hotwords = null, bool diarizeSpeakers = false)
+    public TranscriptionService(LanguageProfile? language = null,
+        IEnumerable<string>? hotwords = null, bool diarizeSpeakers = false)
     {
-        var modelDir = Path.Combine(ModelsRoot, "giga-am-v3-punct");
+        _language = language ?? Languages.Russian;
         _vadModelPath = Path.Combine(ModelsRoot, "silero_vad.onnx");
 
         var config = new OfflineRecognizerConfig();
         config.FeatConfig.SampleRate = Rate;
-        config.ModelConfig.Transducer.Encoder = Path.Combine(modelDir, "encoder.int8.onnx");
-        config.ModelConfig.Transducer.Decoder = Path.Combine(modelDir, "decoder.onnx");
-        config.ModelConfig.Transducer.Joiner = Path.Combine(modelDir, "joiner.onnx");
-        config.ModelConfig.Tokens = Path.Combine(modelDir, "tokens.txt");
+        config.ModelConfig.Transducer.Encoder = _language.ModelPath(_language.EncoderFile);
+        config.ModelConfig.Transducer.Decoder = _language.ModelPath(_language.DecoderFile);
+        config.ModelConfig.Transducer.Joiner = _language.ModelPath(_language.JoinerFile);
+        config.ModelConfig.Tokens = _language.ModelPath("tokens.txt");
         config.ModelConfig.ModelType = "nemo_transducer";
         config.ModelConfig.NumThreads = 2;
 
@@ -128,7 +135,7 @@ public sealed class TranscriptionService : IDisposable
         // Диаризация опциональна: нет модели или не создалась — работаем как раньше («Собеседник»).
         if (diarizeSpeakers && File.Exists(SpeakerModelPath))
         {
-            try { _diarizer = new SpeakerDiarizer(SpeakerModelPath); }
+            try { _diarizer = new SpeakerDiarizer(SpeakerModelPath, _language); }
             catch { _diarizer = null; }
         }
     }
@@ -153,9 +160,9 @@ public sealed class TranscriptionService : IDisposable
     {
         _running = true;
 
-        var micThread = new Thread(() => PumpLoop("Я", micTap16k, clock))
+        var micThread = new Thread(() => PumpLoop(_language.MeLabel, micTap16k, clock))
             { IsBackground = true, Name = "MicVadPump" };
-        var sysThread = new Thread(() => PumpLoop("Собеседник", systemTap16k, clock))
+        var sysThread = new Thread(() => PumpLoop(_language.OtherLabel, systemTap16k, clock))
             { IsBackground = true, Name = "SysVadPump" };
         var recThread = new Thread(RecognizeLoop) { IsBackground = true, Name = "SttWorker" };
 
@@ -291,7 +298,7 @@ public sealed class TranscriptionService : IDisposable
                 if (text.Length == 0) continue;
 
                 var speaker = job.Speaker;
-                if (_diarizer is not null && speaker == "Собеседник")
+                if (_diarizer is not null && speaker == _language.OtherLabel)
                 {
                     // Ошибка диаризации не должна ронять транскрипцию — выключаем её и едем дальше.
                     try { speaker = _diarizer.Identify(job.Samples); }

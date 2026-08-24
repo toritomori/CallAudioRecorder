@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
@@ -8,15 +9,14 @@ using System.Threading.Tasks;
 namespace CallAudioRecorder.Services;
 
 /// <summary>
-/// Загрузка моделей распознавания при первом запуске:
-/// GigaAM v3 (transducer + пунктуация) + Silero VAD, всего ~235 МБ.
+/// Загрузка моделей распознавания при первом запуске выбранного языка.
+///
+/// Общие для всех языков — Silero VAD и CAM++ (диаризация), ~30 МБ. Модель распознавания
+/// докачивается под язык: GigaAM v3 (~235 МБ, русский) или Parakeet TDT 0.6B v2 (~660 МБ,
+/// английский). Модель другого языка не качается, пока его не выберут.
 /// </summary>
 public static class ModelDownloader
 {
-    private const string HfBase =
-        "https://huggingface.co/csukuangfj/sherpa-onnx-nemo-transducer-punct-giga-am-v3-russian-2025-12-16/resolve/main";
-    private const string HfMirrorBase =
-        "https://hf-mirror.com/csukuangfj/sherpa-onnx-nemo-transducer-punct-giga-am-v3-russian-2025-12-16/resolve/main";
     private const string VadUrl =
         "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx";
     // Внимание: опечатка «recongition» — так реально называется тег релиза, не «исправлять».
@@ -24,22 +24,49 @@ public static class ModelDownloader
         "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/" +
         "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx";
 
-    // файл → (относительный путь у нас, минимальный ожидаемый размер для валидации,
-    //          прямой URL или null = HuggingFace + зеркало)
-    private static readonly (string Name, string LocalRel, long MinBytes, string? DirectUrl)[] Files =
-    {
-        ("encoder.int8.onnx", @"giga-am-v3-punct\encoder.int8.onnx", 200_000_000, null),
-        ("decoder.onnx",      @"giga-am-v3-punct\decoder.onnx",        3_000_000, null),
-        ("joiner.onnx",       @"giga-am-v3-punct\joiner.onnx",         1_000_000, null),
-        ("tokens.txt",        @"giga-am-v3-punct\tokens.txt",              5_000, null),
-        ("silero_vad.onnx",   @"silero_vad.onnx",                        300_000, VadUrl),
-        ("speaker_campplus_zh_en.onnx", @"speaker_campplus_zh_en.onnx", 25_000_000, SpeakerModelUrl),
-    };
+    private const string GigaAmRepo = "csukuangfj/sherpa-onnx-nemo-transducer-punct-giga-am-v3-russian-2025-12-16";
+    private const string ParakeetRepo = "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8";
 
-    /// <summary>Все ли файлы моделей на месте и правдоподобного размера.</summary>
-    public static bool ModelsPresent()
+    // файл → (имя в репозитории, относительный путь у нас, минимальный ожидаемый размер,
+    //          прямой URL или null = HuggingFace + зеркало)
+    private sealed record ModelFile(string Name, string LocalRel, long MinBytes, string? DirectUrl = null);
+
+    /// <summary>Нужны при любом языке: детектор речи и модель голосовых embedding'ов.</summary>
+    private static readonly ModelFile[] Common =
+    [
+        new("silero_vad.onnx", @"silero_vad.onnx", 300_000, VadUrl),
+        new("speaker_campplus_zh_en.onnx", @"speaker_campplus_zh_en.onnx", 25_000_000, SpeakerModelUrl),
+    ];
+
+    private static (string Repo, ModelFile[] Files) ModelsFor(LanguageProfile language) =>
+        language.Language == TranscriptionLanguage.English
+            ? (ParakeetRepo,
+              [
+                  new("encoder.int8.onnx", $@"{language.ModelDir}\encoder.int8.onnx", 600_000_000),
+                  new("decoder.int8.onnx", $@"{language.ModelDir}\decoder.int8.onnx",   5_000_000),
+                  new("joiner.int8.onnx",  $@"{language.ModelDir}\joiner.int8.onnx",    1_000_000),
+                  new("tokens.txt",        $@"{language.ModelDir}\tokens.txt",              5_000),
+              ])
+            : (GigaAmRepo,
+              [
+                  new("encoder.int8.onnx", $@"{language.ModelDir}\encoder.int8.onnx", 200_000_000),
+                  new("decoder.onnx",      $@"{language.ModelDir}\decoder.onnx",        3_000_000),
+                  new("joiner.onnx",       $@"{language.ModelDir}\joiner.onnx",         1_000_000),
+                  new("tokens.txt",        $@"{language.ModelDir}\tokens.txt",              5_000),
+              ]);
+
+    private static IEnumerable<(ModelFile File, string Repo)> AllFiles(LanguageProfile language)
     {
-        foreach (var f in Files)
+        var (repo, files) = ModelsFor(language);
+        foreach (var f in Common) yield return (f, repo);
+        foreach (var f in files) yield return (f, repo);
+    }
+
+    /// <summary>Все ли файлы моделей для этого языка на месте и правдоподобного размера.</summary>
+    public static bool ModelsPresent(LanguageProfile? language = null)
+    {
+        language ??= Languages.Russian;
+        foreach (var (f, _) in AllFiles(language))
         {
             var path = Path.Combine(TranscriptionService.ModelsRoot, f.LocalRel);
             if (!File.Exists(path) || new FileInfo(path).Length < f.MinBytes) return false;
@@ -47,12 +74,24 @@ public static class ModelDownloader
         return true;
     }
 
-    /// <summary>Докачивает недостающие файлы с прогрессом («имя файла, процент»).</summary>
-    public static async Task EnsureAsync(IProgress<string> progress, CancellationToken ct = default)
+    /// <summary>Сколько мегабайт осталось докачать для этого языка (0 — всё на месте).</summary>
+    public static long MissingMegabytes(LanguageProfile language) =>
+        AllFiles(language)
+            .Where(x =>
+            {
+                var path = Path.Combine(TranscriptionService.ModelsRoot, x.File.LocalRel);
+                return !File.Exists(path) || new FileInfo(path).Length < x.File.MinBytes;
+            })
+            .Sum(x => x.File.MinBytes) / 1_000_000;
+
+    /// <summary>Докачивает недостающие файлы выбранного языка с прогрессом («имя файла, процент»).</summary>
+    public static async Task EnsureAsync(IProgress<string> progress, LanguageProfile? language = null,
+        CancellationToken ct = default)
     {
+        language ??= Languages.Russian;
         using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
 
-        foreach (var f in Files)
+        foreach (var (f, repo) in AllFiles(language))
         {
             var path = Path.Combine(TranscriptionService.ModelsRoot, f.LocalRel);
             if (File.Exists(path) && new FileInfo(path).Length >= f.MinBytes) continue;
@@ -60,7 +99,11 @@ public static class ModelDownloader
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             var urls = f.DirectUrl is not null
                 ? new[] { f.DirectUrl }
-                : new[] { $"{HfBase}/{f.Name}", $"{HfMirrorBase}/{f.Name}" };
+                : new[]
+                {
+                    $"https://huggingface.co/{repo}/resolve/main/{f.Name}",
+                    $"https://hf-mirror.com/{repo}/resolve/main/{f.Name}",
+                };
 
             Exception? last = null;
             foreach (var url in urls)

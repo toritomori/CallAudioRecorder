@@ -29,6 +29,7 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<TranscriptEntry> _transcript = new();
     private readonly OllamaClient _ollama = new();
 
+    private LanguageProfile _language = Languages.Russian;
     private RecordingEngine? _engine;
     private TranscriptionService? _stt;
     private IReadOnlyList<TranscriptEntry>? _finalTranscript;
@@ -45,6 +46,12 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
 
+        // Окно фиксированного размера, но при крупном системном масштабе 920 px могут не влезть
+        // в рабочую область. Тогда высоту подрезаем, а карточки настроек уходят в прокрутку —
+        // блок записи (таймер и кнопка) остаётся целым при любой высоте.
+        MaxHeight = SystemParameters.WorkArea.Height;
+        Height = Math.Min(Height, SystemParameters.WorkArea.Height);
+
         OutputFolder.Text = Environment.GetFolderPath(Environment.SpecialFolder.MyMusic);
         TranscriptList.ItemsSource = _transcript;
         LoadSettings();
@@ -54,6 +61,7 @@ public partial class MainWindow : Window
 
         LoadDevices();
         LoadSystemSources();
+        LoadLanguages();
         _ = LoadOllamaModelsAsync();
 
         Closed += (_, _) =>
@@ -113,6 +121,28 @@ public partial class MainWindow : Window
     }
 
     private void SystemSource_DropDownOpened(object sender, EventArgs e) => LoadSystemSources();
+
+    /// <summary>Заполняет список языков распознавания и выбирает сохранённый в настройках.</summary>
+    private void LoadLanguages()
+    {
+        LanguageBox.Items.Clear();
+        foreach (var profile in Languages.All) LanguageBox.Items.Add(profile);
+        LanguageBox.SelectedItem = _language;
+    }
+
+    private void Language_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (LanguageBox?.SelectedItem is not LanguageProfile profile) return;
+        _language = profile;
+        if (IsLoaded) SaveSettings();
+
+        // Модель другого языка качается при первой записи — предупреждаем заранее, объём заметный.
+        if (!ModelDownloader.ModelsPresent(profile))
+            Status.Text = $"Язык: {profile.DisplayName}. Модель (~{ModelDownloader.MissingMegabytes(profile)} МБ) " +
+                          "будет загружена при старте записи.";
+        else
+            Status.Text = $"Язык распознавания: {profile.DisplayName}";
+    }
 
     /// <summary>Жив ли процесс: PID из списка мог протухнуть, пока пользователь выбирал.</summary>
     private static bool ProcessAlive(int processId)
@@ -194,12 +224,12 @@ public partial class MainWindow : Window
         _busy = true;
         try
         {
-            if (transcribe && !ModelDownloader.ModelsPresent())
+            if (transcribe && !ModelDownloader.ModelsPresent(_language))
             {
                 var progress = new Progress<string>(s => Status.Text = s);
                 try
                 {
-                    await ModelDownloader.EnsureAsync(progress);
+                    await ModelDownloader.EnsureAsync(progress, _language);
                 }
                 catch (Exception ex)
                 {
@@ -225,9 +255,10 @@ public partial class MainWindow : Window
                 {
                     Status.Text = "Загружаю модель распознавания…";
                     var engine = _engine;
-                    var hotwords = TranscriptCorrector.ToHotwords(GlossaryBox.Text);
+                    var hotwords = TranscriptCorrector.ToHotwords(GlossaryBox.Text, _language);
                     bool diarize = DiarizeCheck.IsChecked == true;
-                    _stt = await Task.Run(() => new TranscriptionService(hotwords, diarize));
+                    var language = _language;
+                    _stt = await Task.Run(() => new TranscriptionService(language, hotwords, diarize));
                     _stt.EntryRecognized += entry => Dispatcher.BeginInvoke(() => AddTranscriptEntry(entry));
                     _stt.Start(engine.MicTap16k!, engine.SystemTap16k!, () => engine.Elapsed);
                 }
@@ -352,7 +383,7 @@ public partial class MainWindow : Window
             var progress = new Progress<int>(done =>
                 Status.Text = $"Исправляю текст ({model}): {done} из {transcript.Count}…");
             var fixedEntries = await TranscriptCorrector.CorrectAsync(
-                _ollama, model, transcript, GlossaryBox.Text, progress, _summaryCts.Token);
+                _ollama, model, transcript, GlossaryBox.Text, progress, _language, _summaryCts.Token);
 
             _finalTranscript = fixedEntries;
             _transcript.Clear();
@@ -393,6 +424,8 @@ public partial class MainWindow : Window
                 GlossaryBox.Text = gl.GetString() ?? "";
             if (doc.RootElement.TryGetProperty("diarizeSpeakers", out var di))
                 DiarizeCheck.IsChecked = di.GetBoolean();
+            if (doc.RootElement.TryGetProperty("language", out var lang))
+                _language = Languages.Parse(lang.GetString());
         }
         catch
         {
@@ -410,7 +443,8 @@ public partial class MainWindow : Window
             {
                 mergeGapSeconds = MergeGapSlider.Value,
                 glossary = GlossaryBox.Text,
-                diarizeSpeakers = DiarizeCheck.IsChecked == true
+                diarizeSpeakers = DiarizeCheck.IsChecked == true,
+                language = _language.Language.ToString()
             }));
         }
         catch
@@ -478,7 +512,7 @@ public partial class MainWindow : Window
             // и сообщает через stage, на какой он сейчас.
             var stage = new Progress<string>(text => Status.Text = $"{text} ({model})");
             await foreach (var chunk in SummaryComposer.ComposeAsync(
-                _ollama, model, transcript, stage, outcome, ct))
+                _ollama, model, transcript, stage, outcome, _language, ct))
             {
                 sb.Append(chunk);
                 SummaryBox.AppendText(chunk);
@@ -523,6 +557,7 @@ public partial class MainWindow : Window
         RecDot.Visibility = recording ? Visibility.Visible : Visibility.Hidden;
         Hint.Text = recording ? "идёт запись — нажмите, чтобы остановить" : "нажмите, чтобы начать запись";
         SystemSource.IsEnabled = CaptureDevices.IsEnabled = SettingsPanel.IsEnabled = !recording;
+        LanguageBox.IsEnabled = !recording;
         RenderDevices.IsEnabled = !recording && (SystemSource.SelectedItem as SystemSourceItem)?.Window is null;
         if (recording) OpenFolderBtn.Visibility = Visibility.Collapsed;
 

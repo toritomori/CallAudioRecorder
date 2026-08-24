@@ -9,19 +9,20 @@ using SherpaOnnx;
 namespace CallAudioRecorder;
 
 /// <summary>
-/// Спайк производительности: распознаёт WAV моделью GigaAM v3 и меряет RTF
-/// (отношение времени распознавания к длительности аудио) при разном числе потоков.
+/// Спайк производительности: распознаёт WAV моделью выбранного языка (GigaAM v3 или
+/// Parakeet TDT) и меряет RTF (отношение времени распознавания к длительности аудио)
+/// при разном числе потоков. Заодно показывает распознанный текст — по нему видно,
+/// что модель вообще та, что нужна.
 /// </summary>
 public static class SttSpike
 {
-    public static void Run(string logPath, string wavPath)
+    public static void Run(string logPath, string wavPath, Services.LanguageProfile? language = null)
     {
         var log = new StringBuilder();
         try
         {
-            var modelDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "CallAudioRecorder", "models", "giga-am-v3-punct");
+            var profile = language ?? Services.Languages.Russian;
+            log.AppendLine($"язык={profile.DisplayName} модель={profile.ModelDir}");
 
             // WAV → 16 kHz mono float
             float[] samples = LoadMono16k(wavPath);
@@ -32,10 +33,10 @@ public static class SttSpike
             {
                 var config = new OfflineRecognizerConfig();
                 config.FeatConfig.SampleRate = 16000;
-                config.ModelConfig.Transducer.Encoder = Path.Combine(modelDir, "encoder.int8.onnx");
-                config.ModelConfig.Transducer.Decoder = Path.Combine(modelDir, "decoder.onnx");
-                config.ModelConfig.Transducer.Joiner = Path.Combine(modelDir, "joiner.onnx");
-                config.ModelConfig.Tokens = Path.Combine(modelDir, "tokens.txt");
+                config.ModelConfig.Transducer.Encoder = profile.ModelPath(profile.EncoderFile);
+                config.ModelConfig.Transducer.Decoder = profile.ModelPath(profile.DecoderFile);
+                config.ModelConfig.Transducer.Joiner = profile.ModelPath(profile.JoinerFile);
+                config.ModelConfig.Tokens = profile.ModelPath("tokens.txt");
                 config.ModelConfig.ModelType = "nemo_transducer";
                 config.ModelConfig.NumThreads = threads;
                 config.DecodingMethod = "greedy_search";
@@ -56,6 +57,31 @@ public static class SttSpike
                     if (pass == 1 && threads == 2)
                         log.AppendLine($"TEXT: {text}");
                 }
+            }
+
+            // Боевой конвейер использует modified_beam_search (без него не работают hotwords) —
+            // проверяем, что модель этого языка его вообще принимает.
+            {
+                var config = new OfflineRecognizerConfig();
+                config.FeatConfig.SampleRate = 16000;
+                config.ModelConfig.Transducer.Encoder = profile.ModelPath(profile.EncoderFile);
+                config.ModelConfig.Transducer.Decoder = profile.ModelPath(profile.DecoderFile);
+                config.ModelConfig.Transducer.Joiner = profile.ModelPath(profile.JoinerFile);
+                config.ModelConfig.Tokens = profile.ModelPath("tokens.txt");
+                config.ModelConfig.ModelType = "nemo_transducer";
+                config.ModelConfig.NumThreads = 2;
+                config.DecodingMethod = "modified_beam_search";
+                config.MaxActivePaths = 4;
+
+                using var recognizer = new OfflineRecognizer(config);
+                var sw = Stopwatch.StartNew();
+                using var stream = recognizer.CreateStream();
+                stream.AcceptWaveform(16000, samples);
+                recognizer.Decode(stream);
+                sw.Stop();
+                log.AppendLine($"modified_beam_search: time={sw.Elapsed.TotalSeconds:F2}s " +
+                               $"RTF={sw.Elapsed.TotalSeconds / audioSeconds:F3}");
+                log.AppendLine($"BEAM TEXT: {stream.Result.Text}");
             }
 
             log.Insert(0, "OK\n");

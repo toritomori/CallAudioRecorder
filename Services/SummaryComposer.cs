@@ -24,20 +24,21 @@ public static class SummaryComposer
     /// </summary>
     public static async IAsyncEnumerable<string> ComposeAsync(
         OllamaClient ollama, string model, IReadOnlyList<TranscriptEntry> entries,
-        IProgress<string>? stage = null, ChatOutcome? outcome = null,
+        IProgress<string>? stage = null, ChatOutcome? outcome = null, LanguageProfile? language = null,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
+        var systemPrompt = SummaryPrompt.SystemFor(language);
         int budget = await ollama.GetInputBudgetAsync(model, SummaryPrompt.ResponseTokens, ct);
-        var whole = SummaryPrompt.BuildUserMessage(entries);
+        var whole = SummaryPrompt.BuildUserMessage(entries, language);
 
         string finalMessage;
-        if (Fits(SummaryPrompt.System, whole, budget))
+        if (Fits(systemPrompt, whole, budget))
         {
             finalMessage = whole;
         }
         else
         {
-            int partBudget = await PartBudgetAsync(ollama, model, ct);
+            int partBudget = await PartBudgetAsync(ollama, model, language, ct);
             var chunks = SplitByBudget(entries, partBudget);
 
             var parts = new List<string>(chunks.Count);
@@ -45,18 +46,18 @@ public static class SummaryComposer
             {
                 stage?.Report($"Конспектирую часть {i + 1} из {chunks.Count}…");
                 parts.Add(await ollama.ChatAsync(
-                    model, SummaryPrompt.PartSystem,
-                    SummaryPrompt.BuildPartMessage(chunks[i], i + 1, chunks.Count),
+                    model, SummaryPrompt.PartSystemFor(language),
+                    SummaryPrompt.BuildPartMessage(chunks[i], i + 1, chunks.Count, language),
                     SummaryPrompt.PartResponseTokens, ct: ct));
             }
 
-            parts = await CondenseAsync(ollama, model, parts, budget, partBudget, stage, ct);
+            parts = await CondenseAsync(ollama, model, parts, budget, partBudget, stage, language, ct);
             stage?.Report("Свожу итоги встречи…");
-            finalMessage = SummaryPrompt.BuildFromParts(parts);
+            finalMessage = SummaryPrompt.BuildFromParts(parts, language);
         }
 
         await foreach (var chunk in ollama.ChatStreamAsync(
-            model, SummaryPrompt.System, finalMessage, SummaryPrompt.ResponseTokens, outcome, ct))
+            model, systemPrompt, finalMessage, SummaryPrompt.ResponseTokens, outcome, ct))
             yield return chunk;
     }
 
@@ -66,9 +67,10 @@ public static class SummaryComposer
     /// </summary>
     private static async Task<List<string>> CondenseAsync(
         OllamaClient ollama, string model, List<string> parts,
-        int budget, int partBudget, IProgress<string>? stage, CancellationToken ct)
+        int budget, int partBudget, IProgress<string>? stage, LanguageProfile? language, CancellationToken ct)
     {
-        while (parts.Count > 1 && !Fits(SummaryPrompt.System, SummaryPrompt.BuildFromParts(parts), budget))
+        while (parts.Count > 1 &&
+               !Fits(SummaryPrompt.SystemFor(language), SummaryPrompt.BuildFromParts(parts, language), budget))
         {
             var groups = GroupByBudget(parts, partBudget);
             if (groups.Count >= parts.Count) break; // дальше не ужимается — отдаём как есть
@@ -78,8 +80,10 @@ public static class SummaryComposer
             {
                 stage?.Report($"Сжимаю конспекты: {i + 1} из {groups.Count}…");
                 condensed.Add(await ollama.ChatAsync(
-                    model, SummaryPrompt.PartSystem,
-                    "Объедини конспекты соседних фрагментов встречи в один, ничего не теряя:\n\n" +
+                    model, SummaryPrompt.PartSystemFor(language),
+                    (language?.Language == TranscriptionLanguage.English
+                        ? "Merge the summaries of adjacent meeting fragments into one, losing nothing:\n\n"
+                        : "Объедини конспекты соседних фрагментов встречи в один, ничего не теряя:\n\n") +
                     string.Join("\n\n", groups[i]),
                     SummaryPrompt.PartResponseTokens, ct: ct));
             }
@@ -92,11 +96,12 @@ public static class SummaryComposer
         OllamaClient.EstimateTokens(systemPrompt) + OllamaClient.EstimateTokens(userMessage) <= budget;
 
     /// <summary>Сколько токенов транскрипта класть в одну часть первого прохода.</summary>
-    private static async Task<int> PartBudgetAsync(OllamaClient ollama, string model, CancellationToken ct)
+    private static async Task<int> PartBudgetAsync(OllamaClient ollama, string model,
+        LanguageProfile? language, CancellationToken ct)
     {
         int budget = await ollama.GetInputBudgetAsync(model, SummaryPrompt.PartResponseTokens, ct);
         // Оставляем место под системный промпт и шапку «Фрагмент N из M», плюс запас на неточность оценки.
-        int usable = (int)((budget - OllamaClient.EstimateTokens(SummaryPrompt.PartSystem) - 128) * 0.9);
+        int usable = (int)((budget - OllamaClient.EstimateTokens(SummaryPrompt.PartSystemFor(language)) - 128) * 0.9);
         return Math.Max(1024, Math.Min(usable, 24576)); // части крупнее 24k токенов модели уже плохо держат
     }
 

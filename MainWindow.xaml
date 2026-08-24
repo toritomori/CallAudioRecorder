@@ -2,7 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:m="clr-namespace:CallAudioRecorder.Models"
-        Title="Call Recorder" Width="980" Height="790"
+        Title="Call Recorder" Width="980" Height="920"
         WindowStyle="None" AllowsTransparency="True" Background="Transparent"
         ResizeMode="CanMinimize" WindowStartupLocation="CenterScreen"
         FontFamily="Segoe UI" TextOptions.TextRenderingMode="ClearType">
@@ -67,6 +67,19 @@
                 <DataTrigger Binding="{Binding Speaker}" Value="Собеседник 4">
                     <Setter TargetName="speakerName" Property="Foreground" Value="#C79FE0"/>
                 </DataTrigger>
+                <!-- То же для английских меток: метки задаёт LanguageProfile, цвета — здесь -->
+                <DataTrigger Binding="{Binding Speaker}" Value="Speaker 1">
+                    <Setter TargetName="speakerName" Property="Foreground" Value="#7FB2E5"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Speaker}" Value="Speaker 2">
+                    <Setter TargetName="speakerName" Property="Foreground" Value="#8FD48F"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Speaker}" Value="Speaker 3">
+                    <Setter TargetName="speakerName" Property="Foreground" Value="#E5B37F"/>
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Speaker}" Value="Speaker 4">
+                    <Setter TargetName="speakerName" Property="Foreground" Value="#C79FE0"/>
+                </DataTrigger>
             </DataTemplate.Triggers>
         </DataTemplate>
     </Window.Resources>
@@ -114,14 +127,18 @@
                 <!-- ─────── Левая колонка: запись ─────── -->
                 <Grid Grid.Column="0">
                     <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
+                        <!-- Карточки отдают место кнопке записи, а не наоборот: при нехватке высоты
+                             прокручиваются они, а блок записи всегда остаётся целиком видимым. -->
                         <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto" MinHeight="206"/>
                     </Grid.RowDefinitions>
 
+                    <ScrollViewer Grid.Row="0" x:Name="SettingsScroll" VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled" Padding="0,0,2,0">
+                    <StackPanel>
+
                     <!-- Источники -->
-                    <Border Grid.Row="0" Style="{StaticResource Card}">
+                    <Border Style="{StaticResource Card}">
                         <StackPanel>
                             <TextBlock Style="{StaticResource CardTitle}" Text="ИСТОЧНИКИ"/>
                             <Grid>
@@ -154,7 +171,7 @@
                     </Border>
 
                     <!-- Микшер -->
-                    <Border Grid.Row="1" Style="{StaticResource Card}" Margin="0,10,0,0">
+                    <Border Style="{StaticResource Card}" Margin="0,10,0,0">
                         <StackPanel>
                             <TextBlock Style="{StaticResource CardTitle}" Text="МИКШЕР"/>
 
@@ -165,7 +182,7 @@
                             </Grid>
                             <Slider x:Name="SystemGain" Style="{StaticResource Fader}" Minimum="0" Maximum="2" Value="1"
                                     ValueChanged="Gain_Changed"/>
-                            <ProgressBar x:Name="SystemVu" Style="{StaticResource Vu}" Margin="0,6,0,12"/>
+                            <ProgressBar x:Name="SystemVu" Style="{StaticResource Vu}" Margin="0,5,0,10"/>
 
                             <Grid Margin="0,0,0,4">
                                 <TextBlock Text="Микрофон" Foreground="{StaticResource TextBrush}" FontSize="12"/>
@@ -174,12 +191,12 @@
                             </Grid>
                             <Slider x:Name="MicGain" Style="{StaticResource Fader}" Minimum="0" Maximum="2" Value="1"
                                     ValueChanged="Gain_Changed"/>
-                            <ProgressBar x:Name="MicVu" Style="{StaticResource Vu}" Margin="0,6,0,2"/>
+                            <ProgressBar x:Name="MicVu" Style="{StaticResource Vu}" Margin="0,5,0,0"/>
                         </StackPanel>
                     </Border>
 
                     <!-- Настройки -->
-                    <Border Grid.Row="2" Style="{StaticResource Card}" Margin="0,10,0,0">
+                    <Border Style="{StaticResource Card}" Margin="0,10,0,0">
                         <StackPanel x:Name="SettingsPanel">
                             <TextBlock Style="{StaticResource CardTitle}" Text="ВЫХОДНОЙ ФАЙЛ"/>
                             <Grid>
@@ -209,7 +226,19 @@
                             </Grid>
 
                             <CheckBox x:Name="TranscribeCheck" Style="{StaticResource DarkCheck}" IsChecked="True"
-                                      Content="Живой транскрипт (русский, офлайн)" FontSize="12" Margin="2,12,0,2"/>
+                                      Content="Живой транскрипт (офлайн)" FontSize="12" Margin="2,12,0,2"/>
+
+                            <Grid Margin="22,8,0,2" IsEnabled="{Binding IsChecked, ElementName=TranscribeCheck}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="Язык речи" FontSize="12" VerticalAlignment="Center"
+                                           Foreground="{StaticResource TextBrush}" Margin="0,0,10,0"/>
+                                <ComboBox Grid.Column="1" x:Name="LanguageBox" Style="{StaticResource DarkCombo}"
+                                          ToolTip="Русский — GigaAM v3, English — Parakeet TDT. Модель качается при первом выборе языка."
+                                          SelectionChanged="Language_Changed"/>
+                            </Grid>
 
                             <CheckBox x:Name="DiarizeCheck" Style="{StaticResource DarkCheck}" IsChecked="True"
                                       Content="Различать собеседников по голосу" FontSize="12" Margin="22,6,0,2"
@@ -218,8 +247,12 @@
                         </StackPanel>
                     </Border>
 
+                    </StackPanel>
+                    </ScrollViewer>
+
                     <!-- Таймер и запись -->
-                    <StackPanel Grid.Row="3" VerticalAlignment="Center" HorizontalAlignment="Center">
+                    <StackPanel Grid.Row="1" VerticalAlignment="Center" HorizontalAlignment="Center"
+                                Margin="0,16,0,10">
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,6">
                             <Ellipse x:Name="RecDot" Width="10" Height="10" Fill="{StaticResource AccentBrush}"
                                      VerticalAlignment="Center" Margin="0,4,10,0" Visibility="Hidden"/>
