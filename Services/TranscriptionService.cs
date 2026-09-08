@@ -64,6 +64,7 @@ public sealed class TranscriptionService : IDisposable
 
     private readonly OfflineRecognizer _recognizer;
     private readonly LanguageProfile _language;
+    private readonly TermCanonizer? _canonizer;
     private SpeakerDiarizer? _diarizer;
     private readonly string _vadModelPath;
     private readonly string? _hotwordsFile;
@@ -104,9 +105,11 @@ public sealed class TranscriptionService : IDisposable
     /// «Собеседник 1», «Собеседник 2», … (или «Speaker N») вместо общего «Собеседник».
     /// </param>
     public TranscriptionService(LanguageProfile? language = null,
-        IEnumerable<string>? hotwords = null, bool diarizeSpeakers = false)
+        IEnumerable<string>? hotwords = null, bool diarizeSpeakers = false,
+        TermCanonizer? canonizer = null)
     {
         _language = language ?? Languages.Russian;
+        _canonizer = canonizer;
         _vadModelPath = Path.Combine(ModelsRoot, "silero_vad.onnx");
 
         var config = new OfflineRecognizerConfig();
@@ -297,6 +300,10 @@ public sealed class TranscriptionService : IDisposable
                 var text = stream.Result.Text.Trim();
                 if (text.Length == 0) continue;
 
+                // Термины приводим к написанию из глоссария сразу: реплика уходит в UI
+                // и в файл транскрипта один раз, переписывать её потом уже некому.
+                var canonical = _canonizer?.Apply(text) ?? text;
+
                 var speaker = job.Speaker;
                 if (_diarizer is not null && speaker == _language.OtherLabel)
                 {
@@ -305,8 +312,11 @@ public sealed class TranscriptionService : IDisposable
                     catch { _diarizer.Dispose(); _diarizer = null; }
                 }
 
-                var entry = new TranscriptEntry(speaker, text, job.Start,
-                    TimeSpan.FromSeconds(job.Samples.Length / (double)Rate));
+                var entry = new TranscriptEntry(speaker, canonical, job.Start,
+                    TimeSpan.FromSeconds(job.Samples.Length / (double)Rate))
+                {
+                    RawText = canonical == text ? null : text,
+                };
                 lock (_entriesLock) _entries.Add(entry);
                 EntryRecognized?.Invoke(entry);
             }

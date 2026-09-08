@@ -110,7 +110,80 @@ public partial class App : Application
             return;
         }
 
+        // Канонизация терминов по глоссарию на готовых транскриптах: показывает все замены,
+        // чтобы ловить ложные срабатывания до того, как они попадут в живую запись.
+        // Использование: CallAudioRecorder.exe --canon-test <лог-файл> <файл .md или папка>
+        if (e.Args.Length >= 3 && e.Args[0] == "--canon-test")
+        {
+            RunCanonTest(e.Args[1], e.Args[2]);
+            Shutdown();
+            return;
+        }
+
         new MainWindow().Show();
+    }
+
+    /// <summary>
+    /// Прогоняет <see cref="Services.TermCanonizer"/> по сохранённым транскриптам и пишет
+    /// в лог все замены с частотой. Глоссарий берётся из settings.json — то есть проверяется
+    /// ровно тот список, с которым работает приложение.
+    /// </summary>
+    private static void RunCanonTest(string logPath, string source)
+    {
+        try
+        {
+            var settingsPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "CallAudioRecorder", "settings.json");
+            string glossary = "";
+            if (File.Exists(settingsPath))
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(settingsPath));
+                if (doc.RootElement.TryGetProperty("glossary", out var g)) glossary = g.GetString() ?? "";
+            }
+
+            var canonizer = Services.TermCanonizer.Build(glossary);
+            if (canonizer is null)
+            {
+                File.WriteAllText(logPath, "FAIL\nВ глоссарии нет латинских терминов — канонизировать нечего.\n",
+                    System.Text.Encoding.UTF8);
+                return;
+            }
+
+            var files = Directory.Exists(source)
+                ? Directory.GetFiles(source, "*.транскрипт.md")
+                : new[] { source };
+
+            var replacements = new List<(string From, string To)>();
+            int lines = 0, changed = 0;
+            var entryLine = new System.Text.RegularExpressions.Regex(
+                @"^\*\*\[\d\d:\d\d:\d\d\]\s*.+?:\*\*\s*(.*)$");
+
+            foreach (var file in files)
+                foreach (var line in File.ReadAllLines(file))
+                {
+                    var m = entryLine.Match(line.Trim());
+                    if (!m.Success) continue;
+                    lines++;
+                    int before = replacements.Count;
+                    canonizer.Apply(m.Groups[1].Value, replacements);
+                    if (replacements.Count > before) changed++;
+                }
+
+            var log = new System.Text.StringBuilder();
+            log.AppendLine(replacements.Count > 0 ? "OK" : "FAIL");
+            log.AppendLine($"файлов: {files.Length}, реплик: {lines}, с заменами: {changed}, замен: {replacements.Count}");
+            log.AppendLine();
+            log.AppendLine("--- ЗАМЕНЫ (частота, было → стало) ---");
+            foreach (var group in replacements.GroupBy(r => $"{r.From} → {r.To}").OrderByDescending(g => g.Count()))
+                log.AppendLine($"{group.Count(),4}  {group.Key}");
+
+            File.WriteAllText(logPath, log.ToString(), System.Text.Encoding.UTF8);
+        }
+        catch (Exception ex)
+        {
+            File.WriteAllText(logPath, $"FAIL\n{ex}\n");
+        }
     }
 
     /// <summary>Язык из аргументов командной строки: «en»/«english» → английский, иначе русский.</summary>

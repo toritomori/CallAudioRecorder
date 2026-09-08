@@ -256,9 +256,12 @@ public partial class MainWindow : Window
                     Status.Text = "Загружаю модель распознавания…";
                     var engine = _engine;
                     var hotwords = TranscriptCorrector.ToHotwords(GlossaryBox.Text, _language);
+                    // Глоссарий работает с двух сторон: hotwords смещают распознавание к нужным
+                    // словам, канонизатор приводит к канону то, что оно всё-таки исказило.
+                    var canonizer = TermCanonizer.Build(GlossaryBox.Text);
                     bool diarize = DiarizeCheck.IsChecked == true;
                     var language = _language;
-                    _stt = await Task.Run(() => new TranscriptionService(language, hotwords, diarize));
+                    _stt = await Task.Run(() => new TranscriptionService(language, hotwords, diarize, canonizer));
                     _stt.EntryRecognized += entry => Dispatcher.BeginInvoke(() => AddTranscriptEntry(entry));
                     _stt.Start(engine.MicTap16k!, engine.SystemTap16k!, () => engine.Elapsed);
                 }
