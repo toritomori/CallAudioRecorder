@@ -310,6 +310,13 @@
                                              LostFocus="Glossary_LostFocus"
                                              ToolTip="Например: Телемост, NotebookLM, Kubernetes, Алексей, спринт"/>
 
+                                    <!-- Имя владельца: чтобы оно не досталось собеседнику при разметке -->
+                                    <TextBlock Text="Как зовут вас (для разметки спикеров):" FontSize="11"
+                                               Foreground="{StaticResource MutedBrush}" Margin="0,10,0,5"/>
+                                    <TextBox x:Name="OwnerNameBox" Style="{StaticResource PathBox}"
+                                             FontSize="12" LostFocus="OwnerName_LostFocus"
+                                             ToolTip="Имя, которым к вам обращаются на встречах. Оно не будет присвоено собеседнику."/>
+
                                     <!-- Коррекция текста -->
                                     <Button x:Name="FixTextBtn" Style="{StaticResource GhostButton}"
                                             HorizontalAlignment="Left" Margin="0,8,0,0"

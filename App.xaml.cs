@@ -110,6 +110,32 @@ public partial class App : Application
             return;
         }
 
+        // Имена участников по сохранённому транскрипту: какая метка чьим именем становится.
+        // Использование: CallAudioRecorder.exe --names-test <лог-файл> <файл .транскрипт.md> <модель>
+        if (e.Args.Length >= 4 && e.Args[0] == "--names-test")
+        {
+            var namesLang = LanguageArg(e.Args, 4);
+            System.Threading.Tasks.Task.Run(() => RunNamesTest(e.Args[1], e.Args[2], e.Args[3], namesLang))
+                .GetAwaiter().GetResult();
+            Shutdown();
+            return;
+        }
+
+        // Диаризация готовой записи: сколько спикеров до и после консолидации профилей.
+        // Использование: CallAudioRecorder.exe --diar-file <лог-файл> <mp3 или wav>
+        if (e.Args.Length >= 3 && e.Args[0] == "--diar-file")
+        {
+            float? merge = e.Args.Length >= 4 && float.TryParse(e.Args[3],
+                System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var mt)
+                ? mt : null;
+            float? weak = e.Args.Length >= 5 && float.TryParse(e.Args[4],
+                System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var wt)
+                ? wt : null;
+            DiarSpike.RunFile(e.Args[1], e.Args[2], merge, weak);
+            Shutdown();
+            return;
+        }
+
         // Канонизация терминов по глоссарию на готовых транскриптах: показывает все замены,
         // чтобы ловить ложные срабатывания до того, как они попадут в живую запись.
         // Использование: CallAudioRecorder.exe --canon-test <лог-файл> <файл .md или папка>
@@ -121,6 +147,81 @@ public partial class App : Application
         }
 
         new MainWindow().Show();
+    }
+
+    /// <summary>
+    /// Просит модель сопоставить метки спикеров с именами из разговора и печатает,
+    /// что она предложила и сколько реплик это затронуло.
+    /// </summary>
+    private static async System.Threading.Tasks.Task RunNamesTest(
+        string logPath, string transcriptPath, string model, Services.LanguageProfile language)
+    {
+        try
+        {
+            var entries = LoadTranscript(transcriptPath);
+            var labels = entries.Select(x => x.Speaker).Distinct().OrderBy(x => x).ToList();
+
+            using var ollama = new Services.OllamaClient();
+            var trace = new List<string>();
+            var names = await Services.SpeakerNamer.DetectAsync(ollama, model, entries, language,
+                trace: trace, ownerName: Setting("ownerName"));
+
+            var log = new System.Text.StringBuilder();
+            log.AppendLine(names.Count > 0 ? "OK" : "FAIL");
+            log.AppendLine($"файл: {transcriptPath}");
+            log.AppendLine($"реплик: {entries.Count}, меток: {labels.Count}, распознано имён: {names.Count}");
+            log.AppendLine();
+            foreach (var label in labels)
+            {
+                int count = entries.Count(x => x.Speaker == label);
+                log.AppendLine(names.TryGetValue(label, out var name)
+                    ? $"{label} ({count} реплик) → {name}"
+                    : $"{label} ({count} реплик) → —");
+            }
+            log.AppendLine();
+            log.AppendLine("--- РАЗБОР ---");
+            foreach (var t in trace) log.AppendLine(t);
+
+            File.WriteAllText(logPath, log.ToString(), System.Text.Encoding.UTF8);
+        }
+        catch (Exception ex)
+        {
+            File.WriteAllText(logPath, $"FAIL{Environment.NewLine}{ex}{Environment.NewLine}");
+        }
+    }
+
+    /// <summary>Значение поля из settings.json — чтобы самотесты работали с теми же настройками, что и UI.</summary>
+    private static string Setting(string name)
+    {
+        var path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "CallAudioRecorder", "settings.json");
+        if (!File.Exists(path)) return "";
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(path));
+            return doc.RootElement.TryGetProperty(name, out var value) ? value.GetString() ?? "" : "";
+        }
+        catch
+        {
+            return "";
+        }
+    }
+
+    /// <summary>Читает сохранённый `*.транскрипт.md` обратно в реплики.</summary>
+    private static List<Models.TranscriptEntry> LoadTranscript(string path)
+    {
+        var line = new System.Text.RegularExpressions.Regex(
+            @"^\*\*\[(\d\d):(\d\d):(\d\d)\]\s*(.+?):\*\*\s*(.*)$");
+        var result = new List<Models.TranscriptEntry>();
+        foreach (var raw in File.ReadAllLines(path))
+        {
+            var m = line.Match(raw.Trim());
+            if (!m.Success) continue;
+            var start = new TimeSpan(int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value),
+                int.Parse(m.Groups[3].Value));
+            result.Add(new Models.TranscriptEntry(m.Groups[4].Value, m.Groups[5].Value, start));
+        }
+        return result;
     }
 
     /// <summary>

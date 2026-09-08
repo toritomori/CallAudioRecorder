@@ -28,6 +28,22 @@ public sealed class SpeakerDiarizer : IDisposable
     /// </summary>
     private const double MinEnrollSeconds = 2.0;
 
+    /// <summary>
+    /// Насколько должны быть близки центроиды двух профилей, чтобы слить их после записи.
+    /// Замерено на часовой записи (--diar-file): разные крупные спикеры дают 0.40–0.46,
+    /// поэтому 0.60 их не тронет. Настраивается только ради калибровки самотестом.
+    /// </summary>
+    public static float MergeThreshold { get; set; } = 0.60f;
+
+    /// <summary>
+    /// Порог для профиля, набравшего меньше <see cref="MinReliableSegments"/> надёжных сегментов:
+    /// осколок к «своему» спикеру лежит на 0.50–0.64, так что его прижимаем мягче.
+    /// </summary>
+    public static float WeakMergeThreshold { get; set; } = 0.48f;
+
+    /// <summary>Со скольких надёжных сегментов профиль считается настоящим спикером, а не осколком.</summary>
+    private const int MinReliableSegments = 3;
+
     /// <summary>Профиль спикера: бегущая сумма L2-нормированных embedding'ов.</summary>
     private sealed class Profile(string name, float[] first)
     {
@@ -54,8 +70,12 @@ public sealed class SpeakerDiarizer : IDisposable
         }
     }
 
+    /// <summary>Разобранный сегмент: чей embedding, к какому профилю его отнесли и надёжен ли он.</summary>
+    private sealed record Segment(float[] Embedding, int Profile, bool Reliable);
+
     private readonly SpeakerEmbeddingExtractor _extractor;
     private readonly List<Profile> _profiles = new();
+    private readonly List<Segment> _segments = new();
     private readonly LanguageProfile _language;
     private string _lastSpeaker;
 
@@ -101,6 +121,7 @@ public sealed class SpeakerDiarizer : IDisposable
         if (best is not null && bestScore >= SimilarityThreshold)
         {
             if (canEnroll) best.Accumulate(emb); // короткий сегмент профиль не уточняет
+            Remember(emb, _profiles.IndexOf(best), canEnroll);
             return _lastSpeaker = best.Name;
         }
 
@@ -110,9 +131,132 @@ public sealed class SpeakerDiarizer : IDisposable
         {
             var profile = new Profile(_language.NumberedOther(_profiles.Count + 1), emb);
             _profiles.Add(profile);
+            Remember(emb, _profiles.Count - 1, canEnroll);
             return _lastSpeaker = profile.Name;
         }
+
+        Remember(emb, _profiles.IndexOf(best), canEnroll);
         return _lastSpeaker = best.Name;
+    }
+
+    private void Remember(float[] embedding, int profile, bool reliable) =>
+        _segments.Add(new Segment(embedding, profile, reliable));
+
+    /// <summary>
+    /// Пересобирает профили по всем накопленным embedding'ам и возвращает карту
+    /// «старая метка → новая». Пустая карта — ничего не поменялось.
+    ///
+    /// Зачем: живая диаризация решает по первому же сегменту и назад не смотрит, поэтому
+    /// плодит фантомов — на корпусе из 30 записей 39 % профилей набрали не больше двух реплик,
+    /// а «собеседников» выходило 8.6 на встречу при примерно пяти реальных. После записи
+    /// сравнивать уже есть с чем: центроид, посчитанный по всем сегментам спикера, надёжнее
+    /// того, что был в момент решения, и близкие профили сливаются.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> Consolidate()
+    {
+        var map = new Dictionary<string, string>();
+        if (_profiles.Count < 2 || _segments.Count == 0) return map;
+
+        // Кластер = исходный профиль; сливаем их, пока находится достаточно близкая пара.
+        var clusters = new List<List<int>>();
+        for (int i = 0; i < _profiles.Count; i++) clusters.Add([i]);
+
+        while (clusters.Count > 1)
+        {
+            // Ищем лучшую пару среди ДОПУСТИМЫХ: порог у каждой свой, поэтому обрывать перебор
+            // на глобальном максимуме нельзя — пара крупных профилей с близостью 0.56 закрыла бы
+            // дорогу осколку, которому до его спикера 0.51 и который слить как раз нужно.
+            float bestScore = float.MinValue;
+            int a = -1, b = -1;
+            for (int i = 0; i < clusters.Count; i++)
+                for (int j = i + 1; j < clusters.Count; j++)
+                {
+                    float score = Cosine(Centroid(clusters[i]), Centroid(clusters[j]));
+                    if (score <= bestScore) continue;
+
+                    // Профиль на одной-двух репликах — это чаще всего чужой сегмент, отколовшийся
+                    // от настоящего спикера, поэтому его прижимаем к соседу мягче обычного.
+                    bool weak = Weight(clusters[i]) < MinReliableSegments
+                             || Weight(clusters[j]) < MinReliableSegments;
+                    if (score < (weak ? WeakMergeThreshold : MergeThreshold)) continue;
+
+                    bestScore = score;
+                    a = i;
+                    b = j;
+                }
+
+            if (a < 0) break; // допустимых пар не осталось
+
+            clusters[a].AddRange(clusters[b]);
+            clusters.RemoveAt(b);
+        }
+
+        if (clusters.Count == _profiles.Count) return map;
+
+        // Нумеруем заново по порядку появления: «Собеседник 1» — тот, кто заговорил первым.
+        clusters.Sort((x, y) => FirstSegment(x).CompareTo(FirstSegment(y)));
+        for (int i = 0; i < clusters.Count; i++)
+        {
+            var name = _language.NumberedOther(i + 1);
+            foreach (var profile in clusters[i])
+                if (_profiles[profile].Name != name) map[_profiles[profile].Name] = name;
+        }
+        return map;
+    }
+
+    /// <summary>Центроид кластера по надёжным сегментам (если их нет — по всем).</summary>
+    private float[] Centroid(List<int> cluster)
+    {
+        var sum = new float[_segments[0].Embedding.Length];
+        int count = 0;
+        foreach (var reliableOnly in new[] { true, false })
+        {
+            foreach (var s in _segments)
+            {
+                if (!cluster.Contains(s.Profile)) continue;
+                if (reliableOnly && !s.Reliable) continue;
+                for (int i = 0; i < sum.Length; i++) sum[i] += s.Embedding[i];
+                count++;
+            }
+            if (count > 0) break; // надёжных хватило — по ненадёжным пересчитывать не нужно
+        }
+        if (count > 0) Normalize(sum);
+        return sum;
+    }
+
+    /// <summary>Сколько надёжных сегментов набрал кластер.</summary>
+    private int Weight(List<int> cluster)
+    {
+        int count = 0;
+        foreach (var s in _segments)
+            if (s.Reliable && cluster.Contains(s.Profile)) count++;
+        return count;
+    }
+
+    private int FirstSegment(List<int> cluster)
+    {
+        for (int i = 0; i < _segments.Count; i++)
+            if (cluster.Contains(_segments[i].Profile)) return i;
+        return int.MaxValue;
+    }
+
+    /// <summary>
+    /// Попарная близость центроидов исходных профилей — диагностика для калибровки порогов.
+    /// Возвращает пары «имя A, имя B, косинус, число надёжных сегментов A и B».
+    /// </summary>
+    public IEnumerable<(string A, string B, float Score, int WeightA, int WeightB)> ProfileDistances()
+    {
+        for (int i = 0; i < _profiles.Count; i++)
+            for (int j = i + 1; j < _profiles.Count; j++)
+                yield return (_profiles[i].Name, _profiles[j].Name,
+                    Cosine(Centroid([i]), Centroid([j])), Weight([i]), Weight([j]));
+    }
+
+    private static float Cosine(float[] a, float[] b)
+    {
+        double dot = 0;
+        for (int i = 0; i < a.Length; i++) dot += a[i] * b[i];
+        return (float)dot; // оба вектора нормированы
     }
 
     /// <summary>Embedding сегмента, или null если сегмент короче окна модели.</summary>

@@ -188,8 +188,18 @@ public sealed class TranscriptionService : IDisposable
         _queue.CompleteAdding();
         _threads.FirstOrDefault(t => t.Name == "SttWorker")?.Join(TimeSpan.FromMinutes(2));
 
+        // Живая диаризация решает по первому сегменту и назад не смотрит — здесь она
+        // пересобирает профили по всей записи и склеивает разъехавшихся спикеров.
+        var renames = _diarizer?.Consolidate();
+
         lock (_entriesLock)
-            return MergeAdjacent(_entries.OrderBy(e => e.StartTime));
+        {
+            var entries = _entries.Select(e =>
+                renames is not null && renames.TryGetValue(e.Speaker, out var name)
+                    ? e with { Speaker = name }
+                    : e);
+            return MergeAdjacent(entries.OrderBy(e => e.StartTime));
+        }
     }
 
     /// <summary>Склеивает подряд идущие реплики одного спикера с паузой &lt; BubbleMergeGap.</summary>

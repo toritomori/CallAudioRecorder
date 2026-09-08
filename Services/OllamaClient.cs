@@ -32,6 +32,9 @@ public sealed class OllamaClient : IDisposable
     /// <summary>Меньше просить нет смысла: Ollama и сам поднимет окно до своего минимума.</summary>
     private const int MinContext = 8192;
 
+    /// <summary>Температура по умолчанию: чуть живее нуля для текстовых ответов.</summary>
+    private const double DefaultTemperature = 0.3;
+
     /// <summary>Окно для модели, о которой Ollama ничего не сообщил.</summary>
     private const int UnknownContextLimit = 32768;
 
@@ -127,12 +130,17 @@ public sealed class OllamaClient : IDisposable
     /// а промпт длиннее окна Ollama молча урезает — вместе с системной инструкцией.
     /// </param>
     /// <param name="outcome">Необязательная «расписка»: причина остановки генерации.</param>
+    /// <param name="temperature">
+    /// Разметочным задачам (кто есть кто) нужен воспроизводимый ответ, а не разнообразие:
+    /// на 0.3 модель называла спикеров по-разному от прогона к прогону.
+    /// </param>
     public async IAsyncEnumerable<string> ChatStreamAsync(
         string model, string systemPrompt, string userMessage,
         int responseTokens = 2048, ChatOutcome? outcome = null,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default,
+        double temperature = DefaultTemperature)
     {
-        var options = new Dictionary<string, object> { ["temperature"] = 0.3 };
+        var options = new Dictionary<string, object> { ["temperature"] = temperature };
         var info = await GetModelInfoAsync(model, ct);
         if (!info.IsRemote)
         {
@@ -185,10 +193,12 @@ public sealed class OllamaClient : IDisposable
     /// <summary>Собирает ответ целиком — для промежуточных шагов, которые не показываются в UI.</summary>
     public async Task<string> ChatAsync(
         string model, string systemPrompt, string userMessage,
-        int responseTokens = 2048, ChatOutcome? outcome = null, CancellationToken ct = default)
+        int responseTokens = 2048, ChatOutcome? outcome = null, CancellationToken ct = default,
+        double temperature = DefaultTemperature)
     {
         var sb = new StringBuilder();
-        await foreach (var chunk in ChatStreamAsync(model, systemPrompt, userMessage, responseTokens, outcome, ct))
+        await foreach (var chunk in ChatStreamAsync(model, systemPrompt, userMessage, responseTokens,
+                           outcome, ct, temperature))
             sb.Append(chunk);
         return sb.ToString();
     }

@@ -358,6 +358,8 @@ public partial class MainWindow : Window
 
     private void Glossary_LostFocus(object sender, RoutedEventArgs e) => SaveSettings();
 
+    private void OwnerName_LostFocus(object sender, RoutedEventArgs e) => SaveSettings();
+
     private void Diarize_Changed(object sender, RoutedEventArgs e)
     {
         if (IsLoaded) SaveSettings(); // не писать на диск во время InitializeComponent
@@ -382,6 +384,12 @@ public partial class MainWindow : Window
 
         try
         {
+            // Сначала имена: в таблице задач «Собеседник 12» бесполезен, а имя участника
+            // почти всегда звучит в самом разговоре.
+            Status.Text = $"Определяю имена участников ({model})…";
+            transcript = await SpeakerNamer.ApplyNamesAsync(
+                _ollama, model, transcript, _language, OwnerNameBox.Text, _summaryCts.Token);
+
             // Длинный транскрипт корректор гонит партиями — показываем, сколько реплик уже прошло.
             var progress = new Progress<int>(done =>
                 Status.Text = $"Исправляю текст ({model}): {done} из {transcript.Count}…");
@@ -425,6 +433,8 @@ public partial class MainWindow : Window
                 MergeGapSlider.Value = Math.Clamp(gap.GetDouble(), MergeGapSlider.Minimum, MergeGapSlider.Maximum);
             if (doc.RootElement.TryGetProperty("glossary", out var gl))
                 GlossaryBox.Text = gl.GetString() ?? "";
+            if (doc.RootElement.TryGetProperty("ownerName", out var owner))
+                OwnerNameBox.Text = owner.GetString() ?? "";
             if (doc.RootElement.TryGetProperty("diarizeSpeakers", out var di))
                 DiarizeCheck.IsChecked = di.GetBoolean();
             if (doc.RootElement.TryGetProperty("language", out var lang))
@@ -446,6 +456,7 @@ public partial class MainWindow : Window
             {
                 mergeGapSeconds = MergeGapSlider.Value,
                 glossary = GlossaryBox.Text,
+                ownerName = OwnerNameBox.Text,
                 diarizeSpeakers = DiarizeCheck.IsChecked == true,
                 language = _language.Language.ToString()
             }));
