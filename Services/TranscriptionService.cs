@@ -198,7 +198,10 @@ public sealed class TranscriptionService : IDisposable
                 renames is not null && renames.TryGetValue(e.Speaker, out var name)
                     ? e with { Speaker = name }
                     : e);
-            return MergeAdjacent(entries.OrderBy(e => e.StartTime));
+            var merged = MergeAdjacent(entries.OrderBy(e => e.StartTime));
+            // Версии чинятся только здесь: чтобы понять, что «183» — это 1.8.3, нужна вся
+            // запись целиком, а живой реплике сравнивать не с чем.
+            return VersionNormalizer.Normalize(merged);
         }
     }
 

@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using CallAudioRecorder.Models;
@@ -32,6 +34,8 @@ public static class SummaryComposer
         IProgress<string>? stage = null, ChatOutcome? outcome = null, LanguageProfile? language = null,
         string? glossary = null, [EnumeratorCancellation] CancellationToken ct = default)
     {
+        entries = WithoutFillers(entries);
+
         var systemPrompt = SummaryPrompt.SystemFor(language);
         int budget = await ollama.GetInputBudgetAsync(model, SummaryPrompt.ResponseTokens, ct);
         var whole = SummaryPrompt.BuildUserMessage(entries, language, glossary);
@@ -64,6 +68,23 @@ public static class SummaryComposer
         await foreach (var chunk in ollama.ChatStreamAsync(
             model, systemPrompt, finalMessage, SummaryPrompt.ResponseTokens, outcome, ct))
             yield return chunk;
+    }
+
+    /// <summary>
+    /// Реплики-поддакивания («угу», «ага», «э-э») в итогах не участвуют: смысла не несут,
+    /// а места занимают — на корпусе это каждая двадцатая реплика.
+    ///
+    /// Согласия и отказы («да», «нет», «хорошо», «понял») ОСТАЮТСЯ: короткое «да» бывает
+    /// ответом на вопрос, от которого зависит решение встречи, и выкидывать его нельзя.
+    /// </summary>
+    private static readonly Regex Filler = new(
+        @"^(?:угу|ага|мгм|м+|э+|а+|ам|эм|ну|вот|так|uh+|um+|mm+|yeah|uh-huh)[\s.,!?…-]*$",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    public static IReadOnlyList<TranscriptEntry> WithoutFillers(IReadOnlyList<TranscriptEntry> entries)
+    {
+        var kept = entries.Where(e => !Filler.IsMatch(e.Text.Trim())).ToList();
+        return kept.Count == 0 ? entries : kept; // всё выкинуть нельзя — лучше отдать как есть
     }
 
     /// <summary>

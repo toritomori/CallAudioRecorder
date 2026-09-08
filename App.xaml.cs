@@ -256,20 +256,23 @@ public partial class App : Application
                 : new[] { source };
 
             var replacements = new List<(string From, string To)>();
+            var versions = new List<(string From, string To)>();
             int lines = 0, changed = 0;
-            var entryLine = new System.Text.RegularExpressions.Regex(
-                @"^\*\*\[\d\d:\d\d:\d\d\]\s*.+?:\*\*\s*(.*)$");
 
             foreach (var file in files)
-                foreach (var line in File.ReadAllLines(file))
+            {
+                var entries = LoadTranscript(file);
+                lines += entries.Count;
+                foreach (var entry in entries)
                 {
-                    var m = entryLine.Match(line.Trim());
-                    if (!m.Success) continue;
-                    lines++;
                     int before = replacements.Count;
-                    canonizer.Apply(m.Groups[1].Value, replacements);
+                    canonizer.Apply(entry.Text, replacements);
                     if (replacements.Count > before) changed++;
                 }
+                // Версии считаются по записи целиком: семейство «1.8.x» подтверждается
+                // в одном месте, а применяется ко всем «183» файла.
+                Services.VersionNormalizer.Normalize(entries, versions);
+            }
 
             var log = new System.Text.StringBuilder();
             log.AppendLine(replacements.Count > 0 ? "OK" : "FAIL");
@@ -277,6 +280,11 @@ public partial class App : Application
             log.AppendLine();
             log.AppendLine("--- ЗАМЕНЫ (частота, было → стало) ---");
             foreach (var group in replacements.GroupBy(r => $"{r.From} → {r.To}").OrderByDescending(g => g.Count()))
+                log.AppendLine($"{group.Count(),4}  {group.Key}");
+
+            log.AppendLine();
+            log.AppendLine($"--- ВЕРСИИ (замен: {versions.Count}) ---");
+            foreach (var group in versions.GroupBy(r => $"{r.From} → {r.To}").OrderByDescending(g => g.Count()))
                 log.AppendLine($"{group.Count(),4}  {group.Key}");
 
             File.WriteAllText(logPath, log.ToString(), System.Text.Encoding.UTF8);
