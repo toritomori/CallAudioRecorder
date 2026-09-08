@@ -512,7 +512,7 @@ public partial class MainWindow : Window
             // и сообщает через stage, на какой он сейчас.
             var stage = new Progress<string>(text => Status.Text = $"{text} ({model})");
             await foreach (var chunk in SummaryComposer.ComposeAsync(
-                _ollama, model, transcript, stage, outcome, _language, ct))
+                _ollama, model, transcript, stage, outcome, _language, GlossaryBox.Text, ct))
             {
                 sb.Append(chunk);
                 SummaryBox.AppendText(chunk);

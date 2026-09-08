@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Windows;
 using NAudio.CoreAudioApi;
@@ -167,23 +168,35 @@ public partial class App : Application
     {
         try
         {
+            // Названия в репликах намеренно искажены так, как их ломает распознавание
+            // («Firebace», «Крейзи Геймс»): проверяем, что глоссарий доходит до итогов
+            // и модель пишет канонические формы, а не разнобой из транскрипта.
             var transcript = new List<Models.TranscriptEntry>
             {
                 new("Я", "Коллеги, предлагаю перенести релиз на пятницу, нужно закрыть баг с оплатой.", TimeSpan.FromSeconds(5)),
-                new("Собеседник", "Согласен. Тогда я подготовлю тестовый стенд к четвергу.", TimeSpan.FromSeconds(15)),
-                new("Я", "Хорошо, а я до среды допишу интеграцию с платёжным шлюзом.", TimeSpan.FromSeconds(25)),
+                new("Собеседник", "Согласен. Тогда я подготовлю тестовый стенд к четвергу и проверю Firebace.", TimeSpan.FromSeconds(15)),
+                new("Я", "Хорошо, а я до среды допишу интеграцию с платёжным шлюзом и выложу билд на Крейзи Геймс.", TimeSpan.FromSeconds(25)),
                 new("Собеседник", "Остаётся открытым вопрос по дизайну главного экрана — обсудим на следующей встрече.", TimeSpan.FromSeconds(40)),
             };
+            const string glossary = "Firebase, Crazy Games";
 
             using var ollama = new Services.OllamaClient();
             var sb = new System.Text.StringBuilder();
             var outcome = new Services.ChatOutcome();
             await foreach (var chunk in Services.SummaryComposer.ComposeAsync(
-                ollama, model, transcript, stage: null, outcome))
+                ollama, model, transcript, stage: null, outcome, glossary: glossary))
             {
                 sb.Append(chunk);
             }
-            File.WriteAllText(logPath, $"OK\ndone_reason={outcome.DoneReason}\n{sb}", System.Text.Encoding.UTF8);
+
+            var answer = sb.ToString();
+            var terms = new[] { "Firebase", "Crazy Games" };
+            var restored = terms.Where(t => answer.Contains(t, StringComparison.OrdinalIgnoreCase)).ToList();
+            var status = restored.Count == terms.Length ? "OK" : "FAIL";
+            File.WriteAllText(logPath,
+                $"{status}\ndone_reason={outcome.DoneReason}\n" +
+                $"глоссарий: восстановлено {restored.Count} из {terms.Length} ({string.Join(", ", restored)})\n{answer}",
+                System.Text.Encoding.UTF8);
         }
         catch (Exception ex)
         {
