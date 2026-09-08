@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Windows;
 using NAudio.CoreAudioApi;
@@ -109,7 +110,189 @@ public partial class App : Application
             return;
         }
 
+        // Имена участников по сохранённому транскрипту: какая метка чьим именем становится.
+        // Использование: CallAudioRecorder.exe --names-test <лог-файл> <файл .транскрипт.md> <модель>
+        if (e.Args.Length >= 4 && e.Args[0] == "--names-test")
+        {
+            var namesLang = LanguageArg(e.Args, 4);
+            System.Threading.Tasks.Task.Run(() => RunNamesTest(e.Args[1], e.Args[2], e.Args[3], namesLang))
+                .GetAwaiter().GetResult();
+            Shutdown();
+            return;
+        }
+
+        // Диаризация готовой записи: сколько спикеров до и после консолидации профилей.
+        // Использование: CallAudioRecorder.exe --diar-file <лог-файл> <mp3 или wav>
+        if (e.Args.Length >= 3 && e.Args[0] == "--diar-file")
+        {
+            float? merge = e.Args.Length >= 4 && float.TryParse(e.Args[3],
+                System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var mt)
+                ? mt : null;
+            float? weak = e.Args.Length >= 5 && float.TryParse(e.Args[4],
+                System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var wt)
+                ? wt : null;
+            DiarSpike.RunFile(e.Args[1], e.Args[2], merge, weak);
+            Shutdown();
+            return;
+        }
+
+        // Канонизация терминов по глоссарию на готовых транскриптах: показывает все замены,
+        // чтобы ловить ложные срабатывания до того, как они попадут в живую запись.
+        // Использование: CallAudioRecorder.exe --canon-test <лог-файл> <файл .md или папка>
+        if (e.Args.Length >= 3 && e.Args[0] == "--canon-test")
+        {
+            RunCanonTest(e.Args[1], e.Args[2]);
+            Shutdown();
+            return;
+        }
+
         new MainWindow().Show();
+    }
+
+    /// <summary>
+    /// Просит модель сопоставить метки спикеров с именами из разговора и печатает,
+    /// что она предложила и сколько реплик это затронуло.
+    /// </summary>
+    private static async System.Threading.Tasks.Task RunNamesTest(
+        string logPath, string transcriptPath, string model, Services.LanguageProfile language)
+    {
+        try
+        {
+            var entries = LoadTranscript(transcriptPath);
+            var labels = entries.Select(x => x.Speaker).Distinct().OrderBy(x => x).ToList();
+
+            using var ollama = new Services.OllamaClient();
+            var trace = new List<string>();
+            var names = await Services.SpeakerNamer.DetectAsync(ollama, model, entries, language,
+                trace: trace, ownerName: Setting("ownerName"));
+
+            var log = new System.Text.StringBuilder();
+            log.AppendLine(names.Count > 0 ? "OK" : "FAIL");
+            log.AppendLine($"файл: {transcriptPath}");
+            log.AppendLine($"реплик: {entries.Count}, меток: {labels.Count}, распознано имён: {names.Count}");
+            log.AppendLine();
+            foreach (var label in labels)
+            {
+                int count = entries.Count(x => x.Speaker == label);
+                log.AppendLine(names.TryGetValue(label, out var name)
+                    ? $"{label} ({count} реплик) → {name}"
+                    : $"{label} ({count} реплик) → —");
+            }
+            log.AppendLine();
+            log.AppendLine("--- РАЗБОР ---");
+            foreach (var t in trace) log.AppendLine(t);
+
+            File.WriteAllText(logPath, log.ToString(), System.Text.Encoding.UTF8);
+        }
+        catch (Exception ex)
+        {
+            File.WriteAllText(logPath, $"FAIL{Environment.NewLine}{ex}{Environment.NewLine}");
+        }
+    }
+
+    /// <summary>Значение поля из settings.json — чтобы самотесты работали с теми же настройками, что и UI.</summary>
+    private static string Setting(string name)
+    {
+        var path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "CallAudioRecorder", "settings.json");
+        if (!File.Exists(path)) return "";
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(path));
+            return doc.RootElement.TryGetProperty(name, out var value) ? value.GetString() ?? "" : "";
+        }
+        catch
+        {
+            return "";
+        }
+    }
+
+    /// <summary>Читает сохранённый `*.транскрипт.md` обратно в реплики.</summary>
+    private static List<Models.TranscriptEntry> LoadTranscript(string path)
+    {
+        var line = new System.Text.RegularExpressions.Regex(
+            @"^\*\*\[(\d\d):(\d\d):(\d\d)\]\s*(.+?):\*\*\s*(.*)$");
+        var result = new List<Models.TranscriptEntry>();
+        foreach (var raw in File.ReadAllLines(path))
+        {
+            var m = line.Match(raw.Trim());
+            if (!m.Success) continue;
+            var start = new TimeSpan(int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value),
+                int.Parse(m.Groups[3].Value));
+            result.Add(new Models.TranscriptEntry(m.Groups[4].Value, m.Groups[5].Value, start));
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Прогоняет <see cref="Services.TermCanonizer"/> по сохранённым транскриптам и пишет
+    /// в лог все замены с частотой. Глоссарий берётся из settings.json — то есть проверяется
+    /// ровно тот список, с которым работает приложение.
+    /// </summary>
+    private static void RunCanonTest(string logPath, string source)
+    {
+        try
+        {
+            var settingsPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "CallAudioRecorder", "settings.json");
+            string glossary = "";
+            if (File.Exists(settingsPath))
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(settingsPath));
+                if (doc.RootElement.TryGetProperty("glossary", out var g)) glossary = g.GetString() ?? "";
+            }
+
+            var canonizer = Services.TermCanonizer.Build(glossary);
+            if (canonizer is null)
+            {
+                File.WriteAllText(logPath, "FAIL\nВ глоссарии нет латинских терминов — канонизировать нечего.\n",
+                    System.Text.Encoding.UTF8);
+                return;
+            }
+
+            var files = Directory.Exists(source)
+                ? Directory.GetFiles(source, "*.транскрипт.md")
+                : new[] { source };
+
+            var replacements = new List<(string From, string To)>();
+            var versions = new List<(string From, string To)>();
+            int lines = 0, changed = 0;
+
+            foreach (var file in files)
+            {
+                var entries = LoadTranscript(file);
+                lines += entries.Count;
+                foreach (var entry in entries)
+                {
+                    int before = replacements.Count;
+                    canonizer.Apply(entry.Text, replacements);
+                    if (replacements.Count > before) changed++;
+                }
+                // Версии считаются по записи целиком: семейство «1.8.x» подтверждается
+                // в одном месте, а применяется ко всем «183» файла.
+                Services.VersionNormalizer.Normalize(entries, versions);
+            }
+
+            var log = new System.Text.StringBuilder();
+            log.AppendLine(replacements.Count > 0 ? "OK" : "FAIL");
+            log.AppendLine($"файлов: {files.Length}, реплик: {lines}, с заменами: {changed}, замен: {replacements.Count}");
+            log.AppendLine();
+            log.AppendLine("--- ЗАМЕНЫ (частота, было → стало) ---");
+            foreach (var group in replacements.GroupBy(r => $"{r.From} → {r.To}").OrderByDescending(g => g.Count()))
+                log.AppendLine($"{group.Count(),4}  {group.Key}");
+
+            log.AppendLine();
+            log.AppendLine($"--- ВЕРСИИ (замен: {versions.Count}) ---");
+            foreach (var group in versions.GroupBy(r => $"{r.From} → {r.To}").OrderByDescending(g => g.Count()))
+                log.AppendLine($"{group.Count(),4}  {group.Key}");
+
+            File.WriteAllText(logPath, log.ToString(), System.Text.Encoding.UTF8);
+        }
+        catch (Exception ex)
+        {
+            File.WriteAllText(logPath, $"FAIL\n{ex}\n");
+        }
     }
 
     /// <summary>Язык из аргументов командной строки: «en»/«english» → английский, иначе русский.</summary>
@@ -167,23 +350,35 @@ public partial class App : Application
     {
         try
         {
+            // Названия в репликах намеренно искажены так, как их ломает распознавание
+            // («Firebace», «Крейзи Геймс»): проверяем, что глоссарий доходит до итогов
+            // и модель пишет канонические формы, а не разнобой из транскрипта.
             var transcript = new List<Models.TranscriptEntry>
             {
                 new("Я", "Коллеги, предлагаю перенести релиз на пятницу, нужно закрыть баг с оплатой.", TimeSpan.FromSeconds(5)),
-                new("Собеседник", "Согласен. Тогда я подготовлю тестовый стенд к четвергу.", TimeSpan.FromSeconds(15)),
-                new("Я", "Хорошо, а я до среды допишу интеграцию с платёжным шлюзом.", TimeSpan.FromSeconds(25)),
+                new("Собеседник", "Согласен. Тогда я подготовлю тестовый стенд к четвергу и проверю Firebace.", TimeSpan.FromSeconds(15)),
+                new("Я", "Хорошо, а я до среды допишу интеграцию с платёжным шлюзом и выложу билд на Крейзи Геймс.", TimeSpan.FromSeconds(25)),
                 new("Собеседник", "Остаётся открытым вопрос по дизайну главного экрана — обсудим на следующей встрече.", TimeSpan.FromSeconds(40)),
             };
+            const string glossary = "Firebase, Crazy Games";
 
             using var ollama = new Services.OllamaClient();
             var sb = new System.Text.StringBuilder();
             var outcome = new Services.ChatOutcome();
             await foreach (var chunk in Services.SummaryComposer.ComposeAsync(
-                ollama, model, transcript, stage: null, outcome))
+                ollama, model, transcript, stage: null, outcome, glossary: glossary))
             {
                 sb.Append(chunk);
             }
-            File.WriteAllText(logPath, $"OK\ndone_reason={outcome.DoneReason}\n{sb}", System.Text.Encoding.UTF8);
+
+            var answer = sb.ToString();
+            var terms = new[] { "Firebase", "Crazy Games" };
+            var restored = terms.Where(t => answer.Contains(t, StringComparison.OrdinalIgnoreCase)).ToList();
+            var status = restored.Count == terms.Length ? "OK" : "FAIL";
+            File.WriteAllText(logPath,
+                $"{status}\ndone_reason={outcome.DoneReason}\n" +
+                $"глоссарий: восстановлено {restored.Count} из {terms.Length} ({string.Join(", ", restored)})\n{answer}",
+                System.Text.Encoding.UTF8);
         }
         catch (Exception ex)
         {

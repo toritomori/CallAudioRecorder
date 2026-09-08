@@ -118,9 +118,33 @@ public static class SummaryPrompt
     public static string PartSystemFor(LanguageProfile? language) =>
         IsEnglish(language) ? PartSystemEn : PartSystemRu;
 
-    public static string BuildUserMessage(IReadOnlyList<TranscriptEntry> entries, LanguageProfile? language = null)
+    /// <summary>
+    /// Шапка с глоссарием. В отличие от <see cref="TranscriptCorrector"/>, который правит сам
+    /// транскрипт, здесь модель читает искажённый текст и должна узнать термин по звучанию:
+    /// редкие названия распознавание разносит на десяток написаний («Interstation», «Intersticial»,
+    /// «интерстишул» — это одно слово), и без списка итоги наследуют этот разнобой.
+    /// </summary>
+    public static string BuildGlossaryBlock(string? glossary, LanguageProfile? language = null)
     {
-        var sb = new StringBuilder(IsEnglish(language) ? "Call transcript:\n\n" : "Транскрипт звонка:\n\n");
+        if (string.IsNullOrWhiteSpace(glossary)) return "";
+        var sb = new StringBuilder();
+        sb.AppendLine(IsEnglish(language)
+            ? "Terms, names and titles that come up in this meeting. Recognition may have mangled " +
+              "them in the transcript — recognise them by how they sound and use the spelling " +
+              "from this list in the notes:"
+            : "Термины, имена и названия, которые встречаются в этой встрече. В транскрипте они " +
+              "могли быть искажены распознаванием — узнавай их по звучанию и пиши в итогах " +
+              "в правильном написании из списка:");
+        sb.AppendLine(glossary.Trim());
+        sb.AppendLine();
+        return sb.ToString();
+    }
+
+    public static string BuildUserMessage(IReadOnlyList<TranscriptEntry> entries,
+        LanguageProfile? language = null, string? glossary = null)
+    {
+        var sb = new StringBuilder(BuildGlossaryBlock(glossary, language));
+        sb.AppendLine(IsEnglish(language) ? "Call transcript:" : "Транскрипт звонка:").AppendLine();
         foreach (var e in entries)
             sb.AppendLine(FormatEntry(e));
         return sb.ToString();
@@ -128,21 +152,24 @@ public static class SummaryPrompt
 
     /// <summary>Сообщение первого прохода: один фрагмент длинной встречи.</summary>
     public static string BuildPartMessage(IReadOnlyList<TranscriptEntry> entries, int index, int total,
-        LanguageProfile? language = null)
+        LanguageProfile? language = null, string? glossary = null)
     {
-        var sb = new StringBuilder(IsEnglish(language)
-            ? $"Fragment {index} of {total} (call transcript):\n\n"
-            : $"Фрагмент {index} из {total} (транскрипт звонка):\n\n");
+        var sb = new StringBuilder(BuildGlossaryBlock(glossary, language));
+        sb.AppendLine(IsEnglish(language)
+            ? $"Fragment {index} of {total} (call transcript):"
+            : $"Фрагмент {index} из {total} (транскрипт звонка):").AppendLine();
         foreach (var e in entries)
             sb.AppendLine(FormatEntry(e));
         return sb.ToString();
     }
 
     /// <summary>Сообщение второго прохода: итоги строятся по конспектам частей, а не по транскрипту.</summary>
-    public static string BuildFromParts(IReadOnlyList<string> parts, LanguageProfile? language = null)
+    public static string BuildFromParts(IReadOnlyList<string> parts, LanguageProfile? language = null,
+        string? glossary = null)
     {
         bool english = IsEnglish(language);
-        var sb = new StringBuilder(english
+        var sb = new StringBuilder(BuildGlossaryBlock(glossary, language));
+        sb.Append(english
             ? "The meeting was long, so below are summaries of its parts in chronological order. " +
               "Write up the notes for the meeting as a whole from these summaries.\n\n"
             : "Встреча была длинной, поэтому ниже — конспекты её частей в хронологическом порядке. " +

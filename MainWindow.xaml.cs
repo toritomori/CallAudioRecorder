@@ -256,9 +256,12 @@ public partial class MainWindow : Window
                     Status.Text = "Загружаю модель распознавания…";
                     var engine = _engine;
                     var hotwords = TranscriptCorrector.ToHotwords(GlossaryBox.Text, _language);
+                    // Глоссарий работает с двух сторон: hotwords смещают распознавание к нужным
+                    // словам, канонизатор приводит к канону то, что оно всё-таки исказило.
+                    var canonizer = TermCanonizer.Build(GlossaryBox.Text);
                     bool diarize = DiarizeCheck.IsChecked == true;
                     var language = _language;
-                    _stt = await Task.Run(() => new TranscriptionService(language, hotwords, diarize));
+                    _stt = await Task.Run(() => new TranscriptionService(language, hotwords, diarize, canonizer));
                     _stt.EntryRecognized += entry => Dispatcher.BeginInvoke(() => AddTranscriptEntry(entry));
                     _stt.Start(engine.MicTap16k!, engine.SystemTap16k!, () => engine.Elapsed);
                 }
@@ -355,6 +358,8 @@ public partial class MainWindow : Window
 
     private void Glossary_LostFocus(object sender, RoutedEventArgs e) => SaveSettings();
 
+    private void OwnerName_LostFocus(object sender, RoutedEventArgs e) => SaveSettings();
+
     private void Diarize_Changed(object sender, RoutedEventArgs e)
     {
         if (IsLoaded) SaveSettings(); // не писать на диск во время InitializeComponent
@@ -379,6 +384,12 @@ public partial class MainWindow : Window
 
         try
         {
+            // Сначала имена: в таблице задач «Собеседник 12» бесполезен, а имя участника
+            // почти всегда звучит в самом разговоре.
+            Status.Text = $"Определяю имена участников ({model})…";
+            transcript = await SpeakerNamer.ApplyNamesAsync(
+                _ollama, model, transcript, _language, OwnerNameBox.Text, _summaryCts.Token);
+
             // Длинный транскрипт корректор гонит партиями — показываем, сколько реплик уже прошло.
             var progress = new Progress<int>(done =>
                 Status.Text = $"Исправляю текст ({model}): {done} из {transcript.Count}…");
@@ -422,6 +433,8 @@ public partial class MainWindow : Window
                 MergeGapSlider.Value = Math.Clamp(gap.GetDouble(), MergeGapSlider.Minimum, MergeGapSlider.Maximum);
             if (doc.RootElement.TryGetProperty("glossary", out var gl))
                 GlossaryBox.Text = gl.GetString() ?? "";
+            if (doc.RootElement.TryGetProperty("ownerName", out var owner))
+                OwnerNameBox.Text = owner.GetString() ?? "";
             if (doc.RootElement.TryGetProperty("diarizeSpeakers", out var di))
                 DiarizeCheck.IsChecked = di.GetBoolean();
             if (doc.RootElement.TryGetProperty("language", out var lang))
@@ -443,6 +456,7 @@ public partial class MainWindow : Window
             {
                 mergeGapSeconds = MergeGapSlider.Value,
                 glossary = GlossaryBox.Text,
+                ownerName = OwnerNameBox.Text,
                 diarizeSpeakers = DiarizeCheck.IsChecked == true,
                 language = _language.Language.ToString()
             }));
@@ -512,7 +526,7 @@ public partial class MainWindow : Window
             // и сообщает через stage, на какой он сейчас.
             var stage = new Progress<string>(text => Status.Text = $"{text} ({model})");
             await foreach (var chunk in SummaryComposer.ComposeAsync(
-                _ollama, model, transcript, stage, outcome, _language, ct))
+                _ollama, model, transcript, stage, outcome, _language, GlossaryBox.Text, ct))
             {
                 sb.Append(chunk);
                 SummaryBox.AppendText(chunk);
