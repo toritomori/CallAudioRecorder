@@ -69,3 +69,6 @@ x86/
 
 # Publish Web Output
 *.[Pp]ublish.xml
+
+# Локальные настройки Claude Code (разрешения, хуки) — личные, не для репозитория
+.claude/
