@@ -110,6 +110,16 @@ public partial class App : Application
             return;
         }
 
+        // Порядок реплик в живой ленте: вставка вперемешку должна давать тот же транскрипт,
+        // что и сортировка по времени после записи.
+        // Использование: CallAudioRecorder.exe --order-test <лог-файл>
+        if (e.Args.Length >= 2 && e.Args[0] == "--order-test")
+        {
+            RunOrderTest(e.Args[1]);
+            Shutdown();
+            return;
+        }
+
         // Имена участников по сохранённому транскрипту: какая метка чьим именем становится.
         // Использование: CallAudioRecorder.exe --names-test <лог-файл> <файл .транскрипт.md> <модель>
         if (e.Args.Length >= 4 && e.Args[0] == "--names-test")
@@ -182,6 +192,75 @@ public partial class App : Application
             log.AppendLine("--- РАЗБОР ---");
             foreach (var t in trace) log.AppendLine(t);
 
+            File.WriteAllText(logPath, log.ToString(), System.Text.Encoding.UTF8);
+        }
+        catch (Exception ex)
+        {
+            File.WriteAllText(logPath, $"FAIL{Environment.NewLine}{ex}{Environment.NewLine}");
+        }
+    }
+
+    /// <summary>
+    /// Проверяет <see cref="Services.TranscriptionService.AppendRecognized"/>: реплики подаются
+    /// в порядке распознавания (перемешанном), а лента должна получиться такой же, как если бы
+    /// их отсортировали по времени и склеили после записи.
+    /// </summary>
+    private static void RunOrderTest(string logPath)
+    {
+        try
+        {
+            var log = new System.Text.StringBuilder();
+            var rnd = new Random(20260908);
+            int failures = 0;
+
+            for (int round = 0; round < 200; round++)
+            {
+                // Реплики двух каналов вперемешку, с паузами меньше и больше порога склейки.
+                var spoken = new List<Models.TranscriptEntry>();
+                var time = TimeSpan.Zero;
+                for (int i = 0; i < 24; i++)
+                {
+                    var speaker = rnd.Next(3) switch { 0 => "Я", 1 => "Собеседник 1", _ => "Собеседник 2" };
+                    var duration = TimeSpan.FromSeconds(rnd.Next(1, 12));
+                    spoken.Add(new Models.TranscriptEntry(speaker, $"реплика {i}", time, duration));
+                    time += duration + TimeSpan.FromSeconds(rnd.Next(0, 6));
+                }
+
+                // Порядок распознавания: длинный сегмент попадает в очередь позже короткого,
+                // начавшегося после него, — перемешиваем, но недалеко от исходного места.
+                var recognized = spoken
+                    .Select((entry, i) => (entry, key: i + rnd.Next(0, 5)))
+                    .OrderBy(x => x.key)
+                    .Select(x => x.entry)
+                    .ToList();
+
+                var flat = new List<Models.TranscriptEntry>();
+                var live = new List<Models.TranscriptEntry>();
+                foreach (var entry in recognized)
+                    live = Services.TranscriptionService.AppendRecognized(flat, entry);
+
+                var expected = Services.TranscriptionService.MergeAdjacent(
+                    spoken.OrderBy(x => x.StartTime));
+
+                bool ordered = live.Zip(live.Skip(1)).All(p => p.First.StartTime <= p.Second.StartTime);
+                bool same = live.Count == expected.Count
+                            && live.Zip(expected).All(p => p.First.Speaker == p.Second.Speaker
+                                                        && p.First.Text == p.Second.Text
+                                                        && p.First.StartTime == p.Second.StartTime);
+                if (ordered && same) continue;
+
+                failures++;
+                if (failures <= 3)
+                {
+                    log.AppendLine($"--- РАСХОЖДЕНИЕ (прогон {round}, порядок по времени: {ordered}) ---");
+                    log.AppendLine($"лента:   {string.Join(" | ", live.Select(x => $"{x.TimeLabel} {x.Speaker}: {x.Text}"))}");
+                    log.AppendLine($"эталон:  {string.Join(" | ", expected.Select(x => $"{x.TimeLabel} {x.Speaker}: {x.Text}"))}");
+                }
+            }
+
+            log.Insert(0, failures == 0
+                ? $"OK{Environment.NewLine}200 прогонов: лента совпала с транскриптом после сортировки{Environment.NewLine}"
+                : $"FAIL{Environment.NewLine}расхождений: {failures} из 200{Environment.NewLine}");
             File.WriteAllText(logPath, log.ToString(), System.Text.Encoding.UTF8);
         }
         catch (Exception ex)

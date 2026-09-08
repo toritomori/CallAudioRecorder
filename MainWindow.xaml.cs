@@ -27,6 +27,9 @@ public partial class MainWindow : Window
     private readonly MMDeviceEnumerator _enumerator = new();
     private readonly DispatcherTimer _uiTimer;
     private readonly ObservableCollection<TranscriptEntry> _transcript = new();
+
+    /// <summary>Реплики как их выдал распознаватель, по времени: из них пересобирается лента.</summary>
+    private readonly List<TranscriptEntry> _recognized = new();
     private readonly OllamaClient _ollama = new();
 
     private LanguageProfile _language = Languages.Russian;
@@ -279,6 +282,7 @@ public partial class MainWindow : Window
             }
 
             _transcript.Clear();
+            _recognized.Clear();
             _finalTranscript = null;
             MakeSummaryBtn.IsEnabled = false;
             TranscriptEmpty.Visibility = Visibility.Visible;
@@ -473,16 +477,19 @@ public partial class MainWindow : Window
     /// </summary>
     private void AddTranscriptEntry(TranscriptEntry entry)
     {
-        var last = _transcript.Count > 0 ? _transcript[^1] : null;
-        if (last is not null && last.Speaker == entry.Speaker &&
-            entry.StartTime - last.End <= TranscriptionService.BubbleMergeGap)
+        // Реплика встаёт на своё место по времени, а лента пересобирается: без этого ответ
+        // собеседника оказывался выше вопроса, потому что распознаются каналы не по порядку.
+        var blocks = TranscriptionService.AppendRecognized(_recognized, entry);
+
+        // Обновляем только разошедшиеся блоки — перезаполнение всей коллекции сбрасывало бы
+        // прокрутку и моргало на каждой реплике.
+        for (int i = 0; i < blocks.Count; i++)
         {
-            _transcript[^1] = last.MergeWith(entry);
+            if (i >= _transcript.Count) _transcript.Add(blocks[i]);
+            else if (_transcript[i] != blocks[i]) _transcript[i] = blocks[i];
         }
-        else
-        {
-            _transcript.Add(entry);
-        }
+        while (_transcript.Count > blocks.Count) _transcript.RemoveAt(_transcript.Count - 1);
+
         TranscriptEmpty.Visibility = Visibility.Collapsed;
         TranscriptScroll.ScrollToEnd();
     }

@@ -205,6 +205,29 @@ public sealed class TranscriptionService : IDisposable
         }
     }
 
+    /// <summary>
+    /// Добавляет распознанную реплику в <paramref name="recognized"/> (плоский список, по времени)
+    /// и возвращает ленту блоков — ровно такую же, какой транскрипт станет после записи.
+    ///
+    /// Зачем не «добавить в конец»: реплики приходят в порядке РАСПОЗНАВАНИЯ, а не в порядке
+    /// речи. Каждый канал ждёт своего VAD, поэтому длинная фраза собеседника (00:29:38–00:29:50)
+    /// встаёт в очередь позже короткой реплики с микрофона в 00:29:48 — и в живой ленте ответ
+    /// оказывался выше вопроса, хотя в файле порядок был правильным (там сортировка по времени).
+    ///
+    /// И почему лента пересобирается целиком, а не «доклеивается» на месте: опоздавшая реплика
+    /// не только встаёт в середину, но и РАЗБИВАЕТ блок, который до неё выглядел непрерывным.
+    /// Склейка на месте этого уже не отменит — текст соседей к тому моменту слит.
+    /// </summary>
+    public static List<TranscriptEntry> AppendRecognized(
+        List<TranscriptEntry> recognized, TranscriptEntry entry)
+    {
+        int index = recognized.Count;
+        while (index > 0 && recognized[index - 1].StartTime > entry.StartTime) index--;
+        recognized.Insert(index, entry);
+
+        return MergeAdjacent(recognized);
+    }
+
     /// <summary>Склеивает подряд идущие реплики одного спикера с паузой &lt; BubbleMergeGap.</summary>
     public static List<TranscriptEntry> MergeAdjacent(IEnumerable<TranscriptEntry> sorted)
     {
