@@ -136,8 +136,8 @@ public sealed class OllamaClient : IChatClient, IDisposable
     public async IAsyncEnumerable<string> ChatStreamAsync(
         string model, string systemPrompt, string userMessage,
         int responseTokens = 2048, ChatOutcome? outcome = null,
-        [EnumeratorCancellation] CancellationToken ct = default,
-        double temperature = DefaultTemperature)
+        double temperature = DefaultTemperature,
+        [EnumeratorCancellation] CancellationToken ct = default)
     {
         var options = new Dictionary<string, object> { ["temperature"] = temperature };
         var info = await GetModelInfoAsync(model, ct);
@@ -192,12 +192,12 @@ public sealed class OllamaClient : IChatClient, IDisposable
     /// <summary>Собирает ответ целиком — для промежуточных шагов, которые не показываются в UI.</summary>
     public async Task<string> ChatAsync(
         string model, string systemPrompt, string userMessage,
-        int responseTokens = 2048, ChatOutcome? outcome = null, CancellationToken ct = default,
-        double temperature = DefaultTemperature)
+        int responseTokens = 2048, ChatOutcome? outcome = null,
+        double temperature = DefaultTemperature, CancellationToken ct = default)
     {
         var sb = new StringBuilder();
         await foreach (var chunk in ChatStreamAsync(model, systemPrompt, userMessage, responseTokens,
-                           outcome, ct, temperature))
+                           outcome, temperature, ct))
             sb.Append(chunk);
         return sb.ToString();
     }

@@ -27,11 +27,11 @@ public interface IChatClient
     IAsyncEnumerable<string> ChatStreamAsync(
         string model, string systemPrompt, string userMessage,
         int responseTokens = 2048, ChatOutcome? outcome = null,
-        CancellationToken ct = default, double temperature = DefaultTemperature);
+        double temperature = DefaultTemperature, CancellationToken ct = default);
 
     /// <summary>Собирает ответ целиком — для промежуточных шагов, которые не показываются в UI.</summary>
     Task<string> ChatAsync(
         string model, string systemPrompt, string userMessage,
         int responseTokens = 2048, ChatOutcome? outcome = null,
-        CancellationToken ct = default, double temperature = DefaultTemperature);
+        double temperature = DefaultTemperature, CancellationToken ct = default);
 }

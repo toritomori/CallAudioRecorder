@@ -1,0 +1,13 @@
+<Project>
+
+  <!--
+    Общее для приложения и тестов. Анализаторы включены, пока предупреждений ноль: так они
+    фиксируют уже достигнутое качество, а не превращаются в долг. Правила, неуместные в этом
+    проекте, приглушаются в .editorconfig — с комментарием, почему.
+  -->
+  <PropertyGroup>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+</Project>

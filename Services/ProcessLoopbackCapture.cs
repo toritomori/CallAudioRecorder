@@ -180,7 +180,7 @@ public sealed class ProcessLoopbackCapture : IWaveIn
         }
     }
 
-    private static Exception Unsupported(int hr, string what) => new NotSupportedException(
+    private static NotSupportedException Unsupported(int hr, string what) => new NotSupportedException(
         $"Запись звука отдельного приложения недоступна ({what}, код 0x{hr:X8}). " +
         "Нужна Windows 10 22H2 или новее; выберите вместо этого устройство вывода.");
 
@@ -270,6 +270,9 @@ public sealed class ProcessLoopbackCapture : IWaveIn
         void ActivateCompleted(IActivateAudioInterfaceAsyncOperation operation);
     }
 
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1001",
+        Justification = "Обработчик уходит в COM, и когда вызвать ActivateCompleted, решает движок: " +
+                        "освобождённое событие упало бы в чужом потоке после таймаута ожидания")]
     private sealed class ActivationHandler : IActivateAudioInterfaceCompletionHandler
     {
         public readonly ManualResetEvent Completed = new(false);

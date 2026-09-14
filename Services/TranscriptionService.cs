@@ -182,7 +182,7 @@ public sealed class TranscriptionService : IDisposable
     public IReadOnlyList<TranscriptEntry> StopAndDrain()
     {
         _running = false;
-        foreach (var t in _threads.Where(t => t.Name!.EndsWith("Pump") && t.IsAlive))
+        foreach (var t in _threads.Where(t => t.Name!.EndsWith("Pump", StringComparison.Ordinal) && t.IsAlive))
             t.Join(TimeSpan.FromSeconds(5));
 
         _queue.CompleteAdding();

@@ -39,8 +39,8 @@ internal sealed class FakeChatClient : IChatClient
     public async IAsyncEnumerable<string> ChatStreamAsync(
         string model, string systemPrompt, string userMessage,
         int responseTokens = 2048, ChatOutcome? outcome = null,
-        [EnumeratorCancellation] CancellationToken ct = default,
-        double temperature = IChatClient.DefaultTemperature)
+        double temperature = IChatClient.DefaultTemperature,
+        [EnumeratorCancellation] CancellationToken ct = default)
     {
         var call = new Call(model, systemPrompt, userMessage, responseTokens, temperature);
         Calls.Add(call);
@@ -58,12 +58,12 @@ internal sealed class FakeChatClient : IChatClient
 
     public async Task<string> ChatAsync(
         string model, string systemPrompt, string userMessage,
-        int responseTokens = 2048, ChatOutcome? outcome = null, CancellationToken ct = default,
-        double temperature = IChatClient.DefaultTemperature)
+        int responseTokens = 2048, ChatOutcome? outcome = null,
+        double temperature = IChatClient.DefaultTemperature, CancellationToken ct = default)
     {
         var parts = new List<string>();
         await foreach (var chunk in ChatStreamAsync(model, systemPrompt, userMessage, responseTokens,
-                           outcome, ct, temperature))
+                           outcome, temperature, ct))
             parts.Add(chunk);
         return string.Concat(parts);
     }

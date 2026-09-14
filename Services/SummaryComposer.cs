@@ -66,7 +66,7 @@ public static class SummaryComposer
         }
 
         await foreach (var chunk in ollama.ChatStreamAsync(
-            model, systemPrompt, finalMessage, SummaryPrompt.ResponseTokens, outcome, ct))
+            model, systemPrompt, finalMessage, SummaryPrompt.ResponseTokens, outcome, ct: ct))
             yield return chunk;
     }
 

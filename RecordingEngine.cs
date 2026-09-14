@@ -36,7 +36,7 @@ public sealed class RecordingEngine : IDisposable
     private readonly VolumeSampleProvider _systemVolume;
     private readonly VolumeSampleProvider _micVolume;
     private readonly MixingSampleProvider _mixer;
-    private readonly IWaveProvider _pcm16;
+    private readonly SampleToWaveProvider16 _pcm16;
     private readonly LameMP3FileWriter _writer;
     private readonly Stream _fileStream;
     private readonly Thread _writeThread;

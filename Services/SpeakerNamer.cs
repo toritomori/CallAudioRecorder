@@ -82,7 +82,7 @@ public static class SpeakerNamer
         IChatClient ollama, string model, IReadOnlyList<TranscriptEntry> entries,
         LanguageProfile? language = null, string? ownerName = null, CancellationToken ct = default)
     {
-        var names = await DetectAsync(ollama, model, entries, language, ct, ownerName: ownerName);
+        var names = await DetectAsync(ollama, model, entries, language, ownerName: ownerName, ct: ct);
         if (names.Count == 0) return entries;
 
         return entries
@@ -94,8 +94,8 @@ public static class SpeakerNamer
     /// <param name="trace">Куда сложить ответ модели, кандидатов и голоса — для самотеста.</param>
     public static async Task<IReadOnlyDictionary<string, string>> DetectAsync(
         IChatClient ollama, string model, IReadOnlyList<TranscriptEntry> entries,
-        LanguageProfile? language = null, CancellationToken ct = default,
-        ICollection<string>? trace = null, string? ownerName = null)
+        LanguageProfile? language = null, ICollection<string>? trace = null, string? ownerName = null,
+        CancellationToken ct = default)
     {
         var labels = entries.Select(e => e.Speaker).Where(s => !Languages.IsMeLabel(s))
             .Distinct().ToHashSet();

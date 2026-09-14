@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Runtime.InteropServices;
-using System.Text;
 using NAudio.CoreAudioApi;
 using NAudio.CoreAudioApi.Interfaces;
 
@@ -46,12 +45,14 @@ public static class AudioWindows
             int length = GetWindowTextLength(hwnd);
             if (length == 0) return true;
 
-            GetWindowThreadProcessId(hwnd, out int pid);
+            // Возвращает id потока окна — он не нужен; об исчезнувшем окне скажет pid == 0.
+            _ = GetWindowThreadProcessId(hwnd, out int pid);
             if (pid == 0 || pid == self) return true;
 
-            var title = new StringBuilder(length + 1);
-            GetWindowText(hwnd, title, title.Capacity);
-            string text = title.ToString().Trim();
+            // Заголовок мог измениться между двумя вызовами — верим числу скопированных символов.
+            var title = new char[length + 1];
+            int copied = Math.Clamp(GetWindowText(hwnd, title, title.Length), 0, length);
+            string text = new string(title, 0, copied).Trim();
             if (text.Length == 0) return true;
 
             string process = ProcessName(pid);
@@ -135,8 +136,9 @@ public static class AudioWindows
     [DllImport("user32.dll")]
     private static extern int GetWindowTextLength(IntPtr hwnd);
 
+    /// <summary>Копирует заголовок в буфер и возвращает число символов без завершающего нуля.</summary>
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int count);
+    private static extern int GetWindowText(IntPtr hwnd, [Out] char[] text, int count);
 
     [DllImport("user32.dll")]
     private static extern int GetWindowThreadProcessId(IntPtr hwnd, out int processId);

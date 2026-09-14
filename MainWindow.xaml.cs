@@ -20,6 +20,9 @@ using NAudio.CoreAudioApi;
 
 namespace CallAudioRecorder;
 
+[System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1001",
+    Justification = "Окно WPF освобождает движок, распознавание и клиент Ollama в обработчике Closed; " +
+                    "IDisposable у окна никто бы не вызвал")]
 public partial class MainWindow : Window
 {
     private const string DefaultOllamaModel = "qwen3.5:9b";
@@ -176,7 +179,7 @@ public partial class MainWindow : Window
             var models = await _ollama.ListModelsAsync();
             OllamaModels.Items.Clear();
             foreach (var m in models) OllamaModels.Items.Add(m);
-            OllamaModels.SelectedItem = models.FirstOrDefault(m => m.StartsWith(DefaultOllamaModel))
+            OllamaModels.SelectedItem = models.FirstOrDefault(m => m.StartsWith(DefaultOllamaModel, StringComparison.Ordinal))
                                         ?? models.FirstOrDefault();
         }
         catch (OllamaUnavailableException)
