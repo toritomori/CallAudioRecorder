@@ -299,7 +299,9 @@
                                     CornerRadius="9" Padding="3" HorizontalAlignment="Left" Margin="0,0,0,10">
                                 <TabPanel IsItemsHost="True"/>
                             </Border>
-                            <ContentPresenter Grid.Row="1" ContentSource="SelectedContent"/>
+                            <!-- Имя обязательно: по нему TabControl отдаёт содержимое вкладки в UI Automation.
+                                 Без него экранный диктор и автотесты не видели ни ленты, ни кнопок справа. -->
+                            <ContentPresenter Grid.Row="1" x:Name="PART_SelectedContentHost" ContentSource="SelectedContent"/>
                         </Grid>
                     </ControlTemplate>
                 </Setter.Value>
