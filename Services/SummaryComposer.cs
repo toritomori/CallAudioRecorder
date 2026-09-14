@@ -37,7 +37,7 @@ public static class SummaryComposer
         entries = WithoutFillers(entries);
 
         var systemPrompt = SummaryPrompt.SystemFor(language);
-        int budget = await ollama.GetInputBudgetAsync(model, SummaryPrompt.ResponseTokens, ct);
+        int budget = await ollama.GetInputBudgetAsync(model, SummaryPrompt.ResponseTokens, ct).ConfigureAwait(false);
         var whole = SummaryPrompt.BuildUserMessage(entries, language, glossary);
 
         string finalMessage;
@@ -47,7 +47,7 @@ public static class SummaryComposer
         }
         else
         {
-            int partBudget = await PartBudgetAsync(ollama, model, language, glossary, ct);
+            int partBudget = await PartBudgetAsync(ollama, model, language, glossary, ct).ConfigureAwait(false);
             var chunks = SplitByBudget(entries, partBudget);
 
             var parts = new List<string>(chunks.Count);
@@ -57,16 +57,16 @@ public static class SummaryComposer
                 parts.Add(await ollama.ChatAsync(
                     model, SummaryPrompt.PartSystemFor(language),
                     SummaryPrompt.BuildPartMessage(chunks[i], i + 1, chunks.Count, language, glossary),
-                    SummaryPrompt.PartResponseTokens, ct: ct));
+                    SummaryPrompt.PartResponseTokens, ct: ct).ConfigureAwait(false));
             }
 
-            parts = await CondenseAsync(ollama, model, parts, budget, partBudget, stage, language, glossary, ct);
+            parts = await CondenseAsync(ollama, model, parts, budget, partBudget, stage, language, glossary, ct).ConfigureAwait(false);
             stage?.Report("Свожу итоги встречи…");
             finalMessage = SummaryPrompt.BuildFromParts(parts, language, glossary);
         }
 
         await foreach (var chunk in ollama.ChatStreamAsync(
-            model, systemPrompt, finalMessage, SummaryPrompt.ResponseTokens, outcome, ct: ct))
+            model, systemPrompt, finalMessage, SummaryPrompt.ResponseTokens, outcome, ct: ct).ConfigureAwait(false))
             yield return chunk;
     }
 
@@ -129,7 +129,7 @@ public static class SummaryComposer
                           "сохрани все решения, задачи, сроки и числа, а также пометки в начале " +
                           "пунктов (Тема / Решение / Задача / Вопрос / Факт).\n\n") +
                     string.Join("\n\n", groups[i]),
-                    SummaryPrompt.PartResponseTokens, ct: ct));
+                    SummaryPrompt.PartResponseTokens, ct: ct).ConfigureAwait(false));
             }
             parts = condensed;
         }
@@ -143,7 +143,7 @@ public static class SummaryComposer
     private static async Task<int> PartBudgetAsync(IChatClient ollama, string model,
         LanguageProfile? language, string? glossary, CancellationToken ct)
     {
-        int budget = await ollama.GetInputBudgetAsync(model, SummaryPrompt.PartResponseTokens, ct);
+        int budget = await ollama.GetInputBudgetAsync(model, SummaryPrompt.PartResponseTokens, ct).ConfigureAwait(false);
         // Оставляем место под системный промпт, глоссарий и шапку «Фрагмент N из M»,
         // плюс запас на неточность оценки: глоссарий повторяется в каждой части.
         int service = OllamaClient.EstimateTokens(SummaryPrompt.PartSystemFor(language))

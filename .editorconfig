@@ -88,3 +88,9 @@ dotnet_naming_style.pascal.capitalization = pascal_case
 # русские и читаются человеком, так что текущая культура («12,3 МБ») — ровно то, что нужно.
 # Машиночитаемое (settings.json, промпты, номера версий) форматируется без чисел с культурой.
 dotnet_diagnostic.CA1305.severity = none
+
+# CA2007 — ConfigureAwait(false). Только для Services/: там продолжения не трогают UI, и без него
+# каждое из них при стриминге итогов возвращалось в UI-поток. В MainWindow — наоборот: продолжения
+# обязаны остаться в UI-потоке, иначе обращение к контролам полетит из фонового.
+[Services/**.cs]
+dotnet_diagnostic.CA2007.severity = warning

@@ -82,7 +82,7 @@ public static class SpeakerNamer
         IChatClient ollama, string model, IReadOnlyList<TranscriptEntry> entries,
         LanguageProfile? language = null, string? ownerName = null, CancellationToken ct = default)
     {
-        var names = await DetectAsync(ollama, model, entries, language, ownerName: ownerName, ct: ct);
+        var names = await DetectAsync(ollama, model, entries, language, ownerName: ownerName, ct: ct).ConfigureAwait(false);
         if (names.Count == 0) return entries;
 
         return entries
@@ -103,11 +103,11 @@ public static class SpeakerNamer
 
         bool english = language?.Language == TranscriptionLanguage.English;
 
-        int budget = await ollama.GetInputBudgetAsync(model, ResponseTokens, ct);
+        int budget = await ollama.GetInputBudgetAsync(model, ResponseTokens, ct).ConfigureAwait(false);
         var system = english ? NamesSystemEn : NamesSystemRu;
         var user = BuildMessage(entries, budget - OllamaClient.EstimateTokens(system) - 256, english);
         // Температура 0: на 0.3 список имён менялся от прогона к прогону.
-        var answer = await ollama.ChatAsync(model, system, user, ResponseTokens, ct: ct, temperature: 0);
+        var answer = await ollama.ChatAsync(model, system, user, ResponseTokens, ct: ct, temperature: 0).ConfigureAwait(false);
         trace?.Add($"ответ модели:{Environment.NewLine}{answer.Trim()}");
 
         var candidates = ExtractNames(answer, entries);
@@ -116,7 +116,7 @@ public static class SpeakerNamer
         // Имя владельца записи собеседнику доставаться не должно: на планёрках к нему
         // обращаются чаще всех, и любое такое обращение — голос за следующего говорящего.
         var owner = string.IsNullOrWhiteSpace(ownerName)
-            ? await AskOwnerAsync(ollama, model, user, english, ct)
+            ? await AskOwnerAsync(ollama, model, user, english, ct).ConfigureAwait(false)
             : ownerName.Trim();
         if (owner is not null) candidates.RemoveWhere(n => Same(n, owner));
         trace?.Add($"владелец записи: {owner ?? "не определён"}" +
@@ -350,7 +350,7 @@ public static class SpeakerNamer
             """;
 
         var answer = await ollama.ChatAsync(model, english ? systemEn : systemRu, transcript,
-            responseTokens: 32, ct: ct, temperature: 0);
+            responseTokens: 32, ct: ct, temperature: 0).ConfigureAwait(false);
         var name = answer.Trim().Trim('«', '»', '"', '.', ',');
         return name.Length >= 2 && name != "?" && !name.Contains(' ') ? name : null;
     }

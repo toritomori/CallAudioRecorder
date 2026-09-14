@@ -82,7 +82,7 @@ public static class TranscriptCorrector
         bool english = language?.Language == TranscriptionLanguage.English;
         string systemPrompt = english ? SystemPromptEn : SystemPromptRu;
         string header = BuildHeader(glossary, english);
-        int window = await ollama.GetInputBudgetAsync(model, responseTokens: 0, ct);
+        int window = await ollama.GetInputBudgetAsync(model, responseTokens: 0, ct).ConfigureAwait(false);
         int batchTokens = BatchBudget(window, header, systemPrompt);
 
         var corrected = new Dictionary<int, string>();
@@ -96,7 +96,7 @@ public static class TranscriptCorrector
 
             // Ответ повторяет вход почти слово в слово — резервируем под него столько же с запасом.
             int reserve = OllamaClient.EstimateTokens(user.ToString()) * 5 / 4 + 256;
-            var answer = await ollama.ChatAsync(model, systemPrompt, user.ToString(), reserve, ct: ct);
+            var answer = await ollama.ChatAsync(model, systemPrompt, user.ToString(), reserve, ct: ct).ConfigureAwait(false);
 
             foreach (var (index, text) in ParseCorrections(answer))
                 corrected[index] = text;

@@ -110,7 +110,7 @@ public static class ModelDownloader
             {
                 try
                 {
-                    await DownloadAsync(http, url, path, f.Name, progress, ct);
+                    await DownloadAsync(http, url, path, f.Name, progress, ct).ConfigureAwait(false);
                     last = null;
                     break;
                 }
@@ -131,28 +131,33 @@ public static class ModelDownloader
         string name, IProgress<string> progress, CancellationToken ct)
     {
         var tmp = finalPath + ".partial";
-        using var resp = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+        using var resp = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
         resp.EnsureSuccessStatusCode();
         long total = resp.Content.Headers.ContentLength ?? -1;
 
-        await using (var src = await resp.Content.ReadAsStreamAsync(ct))
-        await using (var dst = File.Create(tmp))
+        // Блоки явные, а не using-объявления: файл обязан закрыться до File.Move ниже.
+        var src = await resp.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+        await using (src.ConfigureAwait(false))
         {
-            var buf = new byte[1 << 16];
-            long done = 0;
-            int read;
-            var lastPct = -1;
-            while ((read = await src.ReadAsync(buf, ct)) > 0)
+            var dst = File.Create(tmp);
+            await using (dst.ConfigureAwait(false))
             {
-                await dst.WriteAsync(buf.AsMemory(0, read), ct);
-                done += read;
-                if (total > 0)
+                var buf = new byte[1 << 16];
+                long done = 0;
+                int read;
+                var lastPct = -1;
+                while ((read = await src.ReadAsync(buf, ct).ConfigureAwait(false)) > 0)
                 {
-                    int pct = (int)(done * 100 / total);
-                    if (pct != lastPct)
+                    await dst.WriteAsync(buf.AsMemory(0, read), ct).ConfigureAwait(false);
+                    done += read;
+                    if (total > 0)
                     {
-                        lastPct = pct;
-                        progress.Report($"Загрузка {name}: {pct}%");
+                        int pct = (int)(done * 100 / total);
+                        if (pct != lastPct)
+                        {
+                            lastPct = pct;
+                            progress.Report($"Загрузка {name}: {pct}%");
+                        }
                     }
                 }
             }

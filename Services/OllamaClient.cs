@@ -57,9 +57,9 @@ public sealed class OllamaClient : IChatClient, IDisposable
     {
         try
         {
-            using var resp = await _http.GetAsync("/api/tags", ct);
+            using var resp = await _http.GetAsync("/api/tags", ct).ConfigureAwait(false);
             resp.EnsureSuccessStatusCode();
-            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false));
 
             var names = new List<string>();
             foreach (var m in doc.RootElement.GetProperty("models").EnumerateArray())
@@ -101,7 +101,7 @@ public sealed class OllamaClient : IChatClient, IDisposable
         if (_models.TryGetValue(model, out var known)) return known;
         if (!_modelsLoaded)
         {
-            try { await ListModelsAsync(ct); }
+            try { await ListModelsAsync(ct).ConfigureAwait(false); }
             catch (OllamaUnavailableException) { /* пусть об этом расскажет сам запрос генерации */ }
             if (_models.TryGetValue(model, out var loaded)) return loaded;
         }
@@ -114,7 +114,7 @@ public sealed class OllamaClient : IChatClient, IDisposable
     /// </summary>
     public async Task<int> GetInputBudgetAsync(string model, int responseTokens, CancellationToken ct = default)
     {
-        var info = await GetModelInfoAsync(model, ct);
+        var info = await GetModelInfoAsync(model, ct).ConfigureAwait(false);
         if (info.IsRemote) return int.MaxValue;
         return Math.Max(MinContext, Math.Min(LocalContextCap, info.ContextLimit)) - responseTokens;
     }
@@ -140,7 +140,7 @@ public sealed class OllamaClient : IChatClient, IDisposable
         [EnumeratorCancellation] CancellationToken ct = default)
     {
         var options = new Dictionary<string, object> { ["temperature"] = temperature };
-        var info = await GetModelInfoAsync(model, ct);
+        var info = await GetModelInfoAsync(model, ct).ConfigureAwait(false);
         if (!info.IsRemote)
         {
             int need = EstimateTokens(systemPrompt) + EstimateTokens(userMessage) + responseTokens;
@@ -162,11 +162,12 @@ public sealed class OllamaClient : IChatClient, IDisposable
             keep_alive = "10m"
         };
 
-        using var response = await SendChatAsync(payload, model, ct);
-        await using var body = await response.Content.ReadAsStreamAsync(ct);
+        using var response = await SendChatAsync(payload, model, ct).ConfigureAwait(false);
+        var body = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+        await using var bodyScope = body.ConfigureAwait(false);
         using var reader = new StreamReader(body, Encoding.UTF8);
 
-        while (await reader.ReadLineAsync(ct) is { } line)
+        while (await reader.ReadLineAsync(ct).ConfigureAwait(false) is { } line)
         {
             ct.ThrowIfCancellationRequested();
             if (string.IsNullOrWhiteSpace(line)) continue;
@@ -197,7 +198,7 @@ public sealed class OllamaClient : IChatClient, IDisposable
     {
         var sb = new StringBuilder();
         await foreach (var chunk in ChatStreamAsync(model, systemPrompt, userMessage, responseTokens,
-                           outcome, temperature, ct))
+                           outcome, temperature, ct).ConfigureAwait(false))
             sb.Append(chunk);
         return sb.ToString();
     }
@@ -213,7 +214,7 @@ public sealed class OllamaClient : IChatClient, IDisposable
             {
                 Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
             };
-            response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+            response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
         }
         catch (HttpRequestException ex) when (ex.InnerException is SocketException)
         {
