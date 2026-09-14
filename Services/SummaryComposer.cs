@@ -109,8 +109,12 @@ public static class SummaryComposer
                 condensed.Add(await ollama.ChatAsync(
                     model, SummaryPrompt.PartSystemFor(language),
                     (language?.Language == TranscriptionLanguage.English
-                        ? "Merge the summaries of adjacent meeting fragments into one, losing nothing:\n\n"
-                        : "Объедини конспекты соседних фрагментов встречи в один, ничего не теряя:\n\n") +
+                        ? "Merge the summaries of adjacent meeting fragments into one, losing nothing: " +
+                          "keep every decision, task, deadline and figure, and keep the tags " +
+                          "(Topic / Decision / Task / Question / Fact) at the start of each bullet.\n\n"
+                        : "Объедини конспекты соседних фрагментов встречи в один, ничего не теряя: " +
+                          "сохрани все решения, задачи, сроки и числа, а также пометки в начале " +
+                          "пунктов (Тема / Решение / Задача / Вопрос / Факт).\n\n") +
                     string.Join("\n\n", groups[i]),
                     SummaryPrompt.PartResponseTokens, ct: ct));
             }
