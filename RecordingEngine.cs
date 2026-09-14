@@ -42,7 +42,8 @@ public sealed class RecordingEngine : IDisposable
     private readonly Thread _writeThread;
     private readonly Stopwatch _clock = new();
 
-    private volatile bool _running;
+    /// <summary>Сигнал остановки потока записи. Тактирование по Stopwatch от него не зависит.</summary>
+    private readonly CancellationTokenSource _stop = new();
     private volatile float _systemPeak;
     private volatile float _micPeak;
     private Exception? _error;
@@ -136,7 +137,6 @@ public sealed class RecordingEngine : IDisposable
 
     public void Start()
     {
-        _running = true;
         _systemCapture.StartRecording();
         _micCapture.StartRecording();
         _clock.Start();
@@ -145,7 +145,7 @@ public sealed class RecordingEngine : IDisposable
 
     public void Stop()
     {
-        _running = false;
+        _stop.Cancel();
         _clock.Stop();
         _systemCapture.StopRecording();
         _micCapture.StopRecording();
@@ -198,7 +198,8 @@ public sealed class RecordingEngine : IDisposable
 
         try
         {
-            while (_running)
+            var stop = _stop.Token;
+            while (!stop.IsCancellationRequested)
             {
                 long targetFrames = (long)(_clock.Elapsed.TotalSeconds * MixRate);
                 int frames = (int)Math.Min(targetFrames - framesWritten, buffer.Length / bytesPerFrame);
@@ -227,7 +228,6 @@ public sealed class RecordingEngine : IDisposable
         catch (Exception ex)
         {
             _error = ex;
-            _running = false;
         }
     }
 
@@ -256,10 +256,11 @@ public sealed class RecordingEngine : IDisposable
 
     public void Dispose()
     {
-        _running = false;
+        _stop.Cancel();
         _systemCapture.Dispose();
         _micCapture.Dispose();
         _writer.Dispose();
         _fileStream.Dispose();
+        _stop.Dispose();
     }
 }

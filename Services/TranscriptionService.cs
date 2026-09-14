@@ -73,7 +73,11 @@ public sealed class TranscriptionService : IDisposable
     private readonly List<Thread> _threads = new();
     private readonly object _entriesLock = new();
 
-    private volatile bool _running;
+    /// <summary>
+    /// Остановка насосов. Токен захватывается в Start и уходит в поток параметром, поэтому
+    /// Dispose источника не роняет насос, который ещё не успел прочитать признак остановки.
+    /// </summary>
+    private readonly CancellationTokenSource _stop = new();
     private Exception? _error;
 
     /// <summary>Новая распознанная реплика (вызывается на фоновом потоке!).</summary>
@@ -161,11 +165,11 @@ public sealed class TranscriptionService : IDisposable
     /// <summary>Запускает насосы обоих каналов и поток распознавания.</summary>
     public void Start(ISampleProvider micTap16k, ISampleProvider systemTap16k, Func<TimeSpan> clock)
     {
-        _running = true;
+        var stop = _stop.Token;
 
-        var micThread = new Thread(() => PumpLoop(_language.MeLabel, micTap16k, clock))
+        var micThread = new Thread(() => PumpLoop(_language.MeLabel, micTap16k, clock, stop))
             { IsBackground = true, Name = "MicVadPump" };
-        var sysThread = new Thread(() => PumpLoop(_language.OtherLabel, systemTap16k, clock))
+        var sysThread = new Thread(() => PumpLoop(_language.OtherLabel, systemTap16k, clock, stop))
             { IsBackground = true, Name = "SysVadPump" };
         var recThread = new Thread(RecognizeLoop) { IsBackground = true, Name = "SttWorker" };
 
@@ -181,7 +185,7 @@ public sealed class TranscriptionService : IDisposable
     /// </summary>
     public IReadOnlyList<TranscriptEntry> StopAndDrain()
     {
-        _running = false;
+        _stop.Cancel();
         foreach (var t in _threads.Where(t => t.Name!.EndsWith("Pump", StringComparison.Ordinal) && t.IsAlive))
             t.Join(TimeSpan.FromSeconds(5));
 
@@ -252,7 +256,7 @@ public sealed class TranscriptionService : IDisposable
     /// Насос канала: читает tap со скоростью реального времени, кормит VAD,
     /// готовые сегменты ставит в очередь распознавания.
     /// </summary>
-    private void PumpLoop(string speaker, ISampleProvider tap, Func<TimeSpan> clock)
+    private void PumpLoop(string speaker, ISampleProvider tap, Func<TimeSpan> clock, CancellationToken stop)
     {
         try
         {
@@ -270,7 +274,7 @@ public sealed class TranscriptionService : IDisposable
             var buf = new float[ChunkFrames];
             long framesRead = 0;
 
-            while (_running)
+            while (!stop.IsCancellationRequested)
             {
                 long targetFrames = (long)(clock().TotalSeconds * Rate);
                 while (framesRead < targetFrames)
@@ -365,11 +369,12 @@ public sealed class TranscriptionService : IDisposable
 
     public void Dispose()
     {
-        _running = false;
+        _stop.Cancel();
         if (!_queue.IsAddingCompleted) _queue.CompleteAdding();
         _recognizer.Dispose();
         _diarizer?.Dispose();
         _queue.Dispose();
+        _stop.Dispose();
 
         if (_hotwordsFile is not null)
         {
