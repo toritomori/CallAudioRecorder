@@ -20,6 +20,13 @@ namespace CallAudioRecorder.Services;
 /// Важно: здесь ответ по объёму равен входу, поэтому в окно модели должны влезть ОБА.
 /// Длинный транскрипт идёт партиями — иначе Ollama урежет промпт, а генерация оборвётся
 /// на первых репликах (done_reason = "length").
+///
+/// Партии нарочно мелкие: запрос вместе с ответом укладывается в минимальное окно Ollama (8192).
+/// Окно задаёт размер KV-кэша, а тот — сколько слоёв модели останется в видеопамяти. На RTX 3060 Ti
+/// (8 ГБ) qwen3.5:9b при окне 8192 целиком на GPU и пишет ~58 токенов/с, а при 20480 — таким было
+/// окно партий по 8192 токена реплик — три слоя из 34 уезжали на CPU, и генерация падала до ~26.
+/// Коррекция почти вся — генерация: встреча на 526 реплик исправлялась 12:50, мелкими партиями — 5:48.
+/// Промпт с глоссарием повторяется в каждой партии, но его чтение стоит полсекунды против минут генерации.
 /// </summary>
 public static class TranscriptCorrector
 {
@@ -81,22 +88,23 @@ public static class TranscriptCorrector
 
         bool english = language?.Language == TranscriptionLanguage.English;
         string systemPrompt = english ? SystemPromptEn : SystemPromptRu;
-        string header = BuildHeader(glossary, english);
+        string preamble = BuildHeader(glossary, english) + (english ? "Fix these lines:" : "Исправь реплики:") + Environment.NewLine;
         int window = await ollama.GetInputBudgetAsync(model, responseTokens: 0, ct).ConfigureAwait(false);
-        int batchTokens = BatchBudget(window, header, systemPrompt);
+        int batchTokens = BatchBudget(window, systemPrompt, preamble);
 
         var corrected = new Dictionary<int, string>();
         int processed = 0;
 
         foreach (var (offset, batch) in SplitByBudget(entries, batchTokens))
         {
-            var user = new StringBuilder(header).AppendLine(english ? "Fix these lines:" : "Исправь реплики:");
+            var lines = new StringBuilder();
             for (int i = 0; i < batch.Count; i++)
-                user.AppendLine($"[{offset + i}] {batch[i].Text}");
+                lines.AppendLine($"[{offset + i}] {batch[i].Text}");
 
-            // Ответ повторяет вход почти слово в слово — резервируем под него столько же с запасом.
-            int reserve = OllamaClient.EstimateTokens(user.ToString()) * 5 / 4 + 256;
-            var answer = await ollama.ChatAsync(model, systemPrompt, user.ToString(), reserve, ct: ct).ConfigureAwait(false);
+            // Ответ повторяет реплики почти слово в слово — резервируем под него столько же с запасом.
+            // Глоссарий модель не повторяет, поэтому в резерв он не входит.
+            int reserve = OllamaClient.EstimateTokens(lines.ToString()) * 5 / 4 + 256;
+            var answer = await ollama.ChatAsync(model, systemPrompt, preamble + lines, reserve, ct: ct).ConfigureAwait(false);
 
             foreach (var (index, text) in ParseCorrections(answer))
                 corrected[index] = text;
@@ -152,12 +160,17 @@ public static class TranscriptCorrector
         return sb.ToString();
     }
 
-    /// <summary>Сколько токенов реплик класть в одну партию: вход и равный ему ответ должны влезть вместе.</summary>
-    private static int BatchBudget(int window, string header, string systemPrompt)
+    /// <summary>
+    /// Сколько токенов реплик класть в одну партию. Весь запрос — системный промпт, глоссарий,
+    /// реплики и равный им ответ — должен уложиться в минимальное окно Ollama, иначе KV-кэш
+    /// выталкивает слои модели из видеопамяти (см. описание класса).
+    /// </summary>
+    private static int BatchBudget(int window, string systemPrompt, string preamble)
     {
-        if (window == int.MaxValue) return MaxBatchTokens; // облачная модель: окно огромно, но формат всё равно держится хуже на длинных партиях
-        int service = OllamaClient.EstimateTokens(systemPrompt) + OllamaClient.EstimateTokens(header) + 128;
-        int usable = (window - service) * 2 / 5; // ~40 % окна на вход, остальное — ответ и запас
+        if (window == int.MaxValue) return MaxBatchTokens; // облачная модель: видеопамять не наша, но формат на длинных партиях держится хуже
+        int context = Math.Min(window, OllamaClient.MinContext);
+        int service = OllamaClient.EstimateTokens(systemPrompt) + OllamaClient.EstimateTokens(preamble) + 256; // 256 — запас резерва ответа
+        int usable = (context - service) * 4 / 9; // реплики + ответ в 5/4 от них = 9/4 реплик
         return Math.Clamp(usable, 512, MaxBatchTokens);
     }
 

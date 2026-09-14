@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using CallAudioRecorder.Models;
 using CallAudioRecorder.Services;
 
@@ -54,6 +55,36 @@ public class TranscriptCorrectorTests
         await TranscriptCorrector.CorrectAsync(model, "fake", Raw, "Kubernetes, GitHub Actions");
 
         Assert.Contains("Kubernetes, GitHub Actions", Assert.Single(model.Calls).User);
+    }
+
+    [Fact]
+    public async Task LongTranscript_EveryBatchFitsMinimalWindow()
+    {
+        // Окно решает, сколько слоёв модели останется в видеопамяти: на 8 ГБ qwen3.5:9b при окне
+        // 20480 теряла три слоя из 34 и генерировала вдвое медленнее. Партия — промпт, глоссарий,
+        // реплики и равный им ответ — обязана уложиться в минимальное окно.
+        var entries = Enumerable.Range(0, 600)
+            .Select(i => new TranscriptEntry(i % 2 == 0 ? "Я" : "Собеседник 1",
+                $"реплика {i}: " + string.Concat(Enumerable.Repeat("слово ", 16)), TimeSpan.FromSeconds(i * 8)))
+            .ToList();
+        string glossary = string.Join(", ", Enumerable.Range(0, 150).Select(i => $"Термин{i}"));
+        var model = new FakeChatClient(call => string.Join("\n",
+            Regex.Matches(call.User, @"^\[(\d+)\]", RegexOptions.Multiline).Select(m => $"[{m.Groups[1].Value}] исправлено")))
+        {
+            InputBudget = OllamaClient.LocalContextCap,
+        };
+
+        var result = await TranscriptCorrector.CorrectAsync(model, "fake", entries, glossary);
+
+        Assert.True(model.Calls.Count > 1);
+        Assert.All(model.Calls, call =>
+        {
+            int need = OllamaClient.EstimateTokens(call.System) + OllamaClient.EstimateTokens(call.User) + call.ResponseTokens;
+            Assert.True(need <= OllamaClient.MinContext, $"запрос на {need} токенов не влезает в {OllamaClient.MinContext}");
+            var lines = call.User[call.User.IndexOf("\n[", StringComparison.Ordinal)..];
+            Assert.True(call.ResponseTokens >= OllamaClient.EstimateTokens(lines), "ответу не хватит резерва");
+        });
+        Assert.All(result, e => Assert.Equal("исправлено", e.Text));
     }
 
     [Fact]

@@ -96,6 +96,58 @@ internal static class LlmChecks
         }
     }
 
+    /// <summary>
+    /// Коррекция сохранённого транскрипта целиком — как кнопка «Исправить текст», но без шага имён:
+    /// сколько партий, сколько секунд каждая, что поменялось. На четырёх репликах --fix-test
+    /// не видно ни партий, ни того, как скорость генерации зависит от окна.
+    /// </summary>
+    public static async Task FixFile(string logPath, string transcriptPath, string model,
+        Services.LanguageProfile language)
+    {
+        try
+        {
+            var entries = LocalData.LoadTranscript(transcriptPath);
+            var laps = new BatchLaps();
+
+            using var ollama = new Services.OllamaClient();
+            var fixedEntries = await Services.TranscriptCorrector.CorrectAsync(
+                ollama, model, entries, LocalData.Setting("glossary"), laps, language);
+
+            var changed = entries.Zip(fixedEntries).Where(p => p.First.Text != p.Second.Text).ToList();
+            var log = new System.Text.StringBuilder(ReferenceEquals(fixedEntries, entries) ? "FAIL\n" : "OK\n");
+            log.AppendLine($"файл: {transcriptPath}");
+            log.AppendLine($"модель: {model}, реплик: {entries.Count}, изменено: {changed.Count}");
+            log.AppendLine($"партий: {laps.Laps.Count}, всего: {laps.Total.TotalSeconds:F0} с");
+            foreach (var (done, took) in laps.Laps)
+                log.AppendLine($"  реплики до {done}: {took.TotalSeconds:F0} с");
+            log.AppendLine("--- ИЗМЕНЕНИЯ (первые 30) ---");
+            foreach (var (was, now) in changed.Take(30))
+                log.AppendLine($"- {was.Text}").AppendLine($"+ {now.Text}");
+            File.WriteAllText(logPath, log.ToString(), System.Text.Encoding.UTF8);
+        }
+        catch (Exception ex)
+        {
+            File.WriteAllText(logPath, $"FAIL\n{ex}\n");
+        }
+    }
+
+    /// <summary>Засекает партии корректора: он вызывает Report синхронно после каждой.</summary>
+    private sealed class BatchLaps : IProgress<int>
+    {
+        private readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
+        private TimeSpan _last;
+
+        public List<(int Done, TimeSpan Took)> Laps { get; } = [];
+        public TimeSpan Total => _clock.Elapsed;
+
+        public void Report(int value)
+        {
+            var now = _clock.Elapsed;
+            Laps.Add((value, now - _last));
+            _last = now;
+        }
+    }
+
     /// <summary>Итоги по короткому транскрипту: глоссарий должен дойти до итогов.</summary>
     public static async Task Summary(string logPath, string model)
     {

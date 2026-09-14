@@ -30,7 +30,7 @@ public sealed class OllamaClient : IChatClient, IDisposable
     public const int LocalContextCap = 65536;
 
     /// <summary>Меньше просить нет смысла: Ollama и сам поднимет окно до своего минимума.</summary>
-    private const int MinContext = 8192;
+    public const int MinContext = 8192;
 
     private const double DefaultTemperature = IChatClient.DefaultTemperature;
 

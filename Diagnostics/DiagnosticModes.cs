@@ -38,6 +38,9 @@ internal static class DiagnosticModes
         // --fix-test <лог> <модель> [ru|en] — LLM-коррекция искажённых терминов
         ["--fix-test"] = new(3, a => RunAsync(() => LlmChecks.Fix(a[1], a[2], LanguageArg(a, 3)))),
 
+        // --fix-file <лог> <файл .транскрипт.md> <модель> [ru|en] — коррекция готового транскрипта: партии и время каждой
+        ["--fix-file"] = new(4, a => RunAsync(() => LlmChecks.FixFile(a[1], a[2], a[3], LanguageArg(a, 4)))),
+
         // --summary-long-test <лог> <модель> [минуты] [ru|en] — окно контекста на длинной встрече
         ["--summary-long-test"] = new(3, a => RunAsync(() =>
             LlmChecks.SummaryLong(a[1], a[2], IntArg(a, 3, 60), LanguageArg(a, 4)))),
