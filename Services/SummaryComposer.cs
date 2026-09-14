@@ -30,7 +30,7 @@ public static class SummaryComposer
     /// (вплоть до двух «разных» ответственных из одной фамилии).
     /// </param>
     public static async IAsyncEnumerable<string> ComposeAsync(
-        OllamaClient ollama, string model, IReadOnlyList<TranscriptEntry> entries,
+        IChatClient ollama, string model, IReadOnlyList<TranscriptEntry> entries,
         IProgress<string>? stage = null, ChatOutcome? outcome = null, LanguageProfile? language = null,
         string? glossary = null, [EnumeratorCancellation] CancellationToken ct = default)
     {
@@ -92,7 +92,7 @@ public static class SummaryComposer
     /// Нужно только для очень длинных встреч на модели с маленьким окном.
     /// </summary>
     private static async Task<List<string>> CondenseAsync(
-        OllamaClient ollama, string model, List<string> parts, int budget, int partBudget,
+        IChatClient ollama, string model, List<string> parts, int budget, int partBudget,
         IProgress<string>? stage, LanguageProfile? language, string? glossary, CancellationToken ct)
     {
         while (parts.Count > 1 &&
@@ -127,7 +127,7 @@ public static class SummaryComposer
         OllamaClient.EstimateTokens(systemPrompt) + OllamaClient.EstimateTokens(userMessage) <= budget;
 
     /// <summary>Сколько токенов транскрипта класть в одну часть первого прохода.</summary>
-    private static async Task<int> PartBudgetAsync(OllamaClient ollama, string model,
+    private static async Task<int> PartBudgetAsync(IChatClient ollama, string model,
         LanguageProfile? language, string? glossary, CancellationToken ct)
     {
         int budget = await ollama.GetInputBudgetAsync(model, SummaryPrompt.PartResponseTokens, ct);

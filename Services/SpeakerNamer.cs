@@ -79,7 +79,7 @@ public static class SpeakerNamer
     /// не нашлось, возвращает исходные реплики.
     /// </summary>
     public static async Task<IReadOnlyList<TranscriptEntry>> ApplyNamesAsync(
-        OllamaClient ollama, string model, IReadOnlyList<TranscriptEntry> entries,
+        IChatClient ollama, string model, IReadOnlyList<TranscriptEntry> entries,
         LanguageProfile? language = null, string? ownerName = null, CancellationToken ct = default)
     {
         var names = await DetectAsync(ollama, model, entries, language, ct, ownerName: ownerName);
@@ -93,7 +93,7 @@ public static class SpeakerNamer
     /// <summary>Карта «метка спикера → имя». Пустая, если ничего не удалось определить.</summary>
     /// <param name="trace">Куда сложить ответ модели, кандидатов и голоса — для самотеста.</param>
     public static async Task<IReadOnlyDictionary<string, string>> DetectAsync(
-        OllamaClient ollama, string model, IReadOnlyList<TranscriptEntry> entries,
+        IChatClient ollama, string model, IReadOnlyList<TranscriptEntry> entries,
         LanguageProfile? language = null, CancellationToken ct = default,
         ICollection<string>? trace = null, string? ownerName = null)
     {
@@ -333,7 +333,7 @@ public static class SpeakerNamer
 
     /// <summary>Имя владельца записи (метка «Я»), или null, если модель его не назвала.</summary>
     private static async Task<string?> AskOwnerAsync(
-        OllamaClient ollama, string model, string transcript, bool english, CancellationToken ct)
+        IChatClient ollama, string model, string transcript, bool english, CancellationToken ct)
     {
         const string systemRu =
             """

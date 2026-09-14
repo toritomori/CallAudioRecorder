@@ -14,7 +14,7 @@ using System.Threading.Tasks;
 namespace CallAudioRecorder.Services;
 
 /// <summary>Тонкий клиент локального Ollama (http://localhost:11434).</summary>
-public sealed class OllamaClient : IDisposable
+public sealed class OllamaClient : IChatClient, IDisposable
 {
     /// <summary>
     /// Символов текста на один токен. Замерено на русском транскрипте (GigaAM → Qwen3.5):
@@ -32,8 +32,7 @@ public sealed class OllamaClient : IDisposable
     /// <summary>Меньше просить нет смысла: Ollama и сам поднимет окно до своего минимума.</summary>
     private const int MinContext = 8192;
 
-    /// <summary>Температура по умолчанию: чуть живее нуля для текстовых ответов.</summary>
-    private const double DefaultTemperature = 0.3;
+    private const double DefaultTemperature = IChatClient.DefaultTemperature;
 
     /// <summary>Окно для модели, о которой Ollama ничего не сообщил.</summary>
     private const int UnknownContextLimit = 32768;

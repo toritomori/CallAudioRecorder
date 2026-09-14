@@ -73,7 +73,7 @@ public static class TranscriptCorrector
     /// </summary>
     /// <param name="progress">Сколько реплик уже обработано.</param>
     public static async Task<IReadOnlyList<TranscriptEntry>> CorrectAsync(
-        OllamaClient ollama, string model, IReadOnlyList<TranscriptEntry> entries,
+        IChatClient ollama, string model, IReadOnlyList<TranscriptEntry> entries,
         string glossary, IProgress<int>? progress = null, LanguageProfile? language = null,
         CancellationToken ct = default)
     {
