@@ -24,6 +24,9 @@ internal sealed class FakeChatClient : IChatClient
     /// <summary>Чем закончилась генерация: «length» имитирует обрыв по окну контекста.</summary>
     public string DoneReason { get; init; } = "stop";
 
+    /// <summary>Причина остановки для отдельного запроса — например, обрыв только первой части.</summary>
+    public Func<Call, string>? DoneReasonFor { get; init; }
+
     public FakeChatClient(Func<Call, string> respond) => _respond = respond;
 
     /// <summary>Ответы по очереди; когда заготовки кончились, повторяется последняя.</summary>
@@ -53,7 +56,7 @@ internal sealed class FakeChatClient : IChatClient
             await Task.Yield();
             yield return answer.Substring(i, Math.Min(7, answer.Length - i));
         }
-        if (outcome is not null) outcome.DoneReason = DoneReason;
+        if (outcome is not null) outcome.DoneReason = DoneReasonFor?.Invoke(call) ?? DoneReason;
     }
 
     public async Task<string> ChatAsync(

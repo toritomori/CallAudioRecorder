@@ -54,10 +54,24 @@ public static class SummaryComposer
             for (int i = 0; i < chunks.Count; i++)
             {
                 stage?.Report($"Конспектирую часть {i + 1} из {chunks.Count}…");
-                parts.Add(await ollama.ChatAsync(
+                var partOutcome = new ChatOutcome();
+                var part = await ollama.ChatAsync(
                     model, SummaryPrompt.PartSystemFor(language),
                     SummaryPrompt.BuildPartMessage(chunks[i], i + 1, chunks.Count, language, glossary),
-                    SummaryPrompt.PartResponseTokens, ct: ct).ConfigureAwait(false));
+                    SummaryPrompt.PartResponseTokens, partOutcome, ct: ct).ConfigureAwait(false);
+
+                // Конспект упёрся в потолок ответа: хвост части пропал бы молча, а что не попало
+                // в конспект, в итоги уже не вернётся. Делим часть пополам и конспектируем заново.
+                if (partOutcome.HitContextLimit && chunks[i].Count > 1)
+                {
+                    stage?.Report($"Конспект части {i + 1} не уместился — делю её пополам…");
+                    int half = chunks[i].Count / 2;
+                    chunks.Insert(i + 1, chunks[i].GetRange(half, chunks[i].Count - half));
+                    chunks[i] = chunks[i].GetRange(0, half);
+                    i--;
+                    continue;
+                }
+                parts.Add(part);
             }
 
             parts = await CondenseAsync(ollama, model, parts, budget, partBudget, stage, language, glossary, ct).ConfigureAwait(false);
@@ -119,7 +133,8 @@ public static class SummaryComposer
             for (int i = 0; i < groups.Count; i++)
             {
                 stage?.Report($"Сжимаю конспекты: {i + 1} из {groups.Count}…");
-                condensed.Add(await ollama.ChatAsync(
+                var mergeOutcome = new ChatOutcome();
+                var merged = await ollama.ChatAsync(
                     model, SummaryPrompt.PartSystemFor(language),
                     (language?.Language == TranscriptionLanguage.English
                         ? "Merge the summaries of adjacent meeting fragments into one, losing nothing: " +
@@ -129,8 +144,14 @@ public static class SummaryComposer
                           "сохрани все решения, задачи, сроки и числа, а также пометки в начале " +
                           "пунктов (Тема / Решение / Задача / Вопрос / Факт).\n\n") +
                     string.Join("\n\n", groups[i]),
-                    SummaryPrompt.PartResponseTokens, ct: ct).ConfigureAwait(false));
+                    SummaryPrompt.PartResponseTokens, mergeOutcome, ct: ct).ConfigureAwait(false);
+
+                // Сжатие упёрлось в потолок ответа — обрезанный конспект молча потерял бы хвост
+                // группы. Оставляем её конспекты как были: длинный промпт лучше пропавших решений.
+                if (mergeOutcome.HitContextLimit) condensed.AddRange(groups[i]);
+                else condensed.Add(merged);
             }
+            if (condensed.Count >= parts.Count) break; // ничего не ужалось — повторять тот же проход бессмысленно
             parts = condensed;
         }
         return parts;

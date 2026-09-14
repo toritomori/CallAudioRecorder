@@ -16,8 +16,12 @@ public static class SummaryPrompt
     /// <summary>Сколько токенов резервировать под сами итоги (структура из пяти разделов).</summary>
     public const int ResponseTokens = 4096;
 
-    /// <summary>Сколько токенов резервировать под конспект одной части.</summary>
-    public const int PartResponseTokens = 2048;
+    /// <summary>
+    /// Сколько токенов резервировать под конспект одной части — это и потолок его длины.
+    /// 2048 было впритык: часть — до ~35 минут разговора, а от конспекта требуется полнота.
+    /// Если конспект всё же обрывается, SummaryComposer делит часть пополам.
+    /// </summary>
+    public const int PartResponseTokens = 4096;
 
     private const string SystemRu =
         """

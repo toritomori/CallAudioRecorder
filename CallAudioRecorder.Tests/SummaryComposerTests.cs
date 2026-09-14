@@ -129,6 +129,34 @@ public class SummaryComposerTests
     }
 
     [Fact]
+    public async Task PartSummaryCutByAnswerLimit_IsRedoneInHalves()
+    {
+        // Потолок ответа обрывает конспект молча: хвост части не попал бы в итоги. Такая часть
+        // делится пополам и конспектируется заново, а оборванный конспект выбрасывается.
+        string partSystem = SummaryPrompt.PartSystemFor(null);
+        int partCalls = 0;
+        var model = new FakeChatClient(c => c.System == partSystem
+            ? (++partCalls == 1 ? "- Факт: оборвано" : "- Факт: конспект части")
+            : "## Краткое резюме\nИтоги по частям.")
+        {
+            InputBudget = 12_000,
+            DoneReasonFor = c => c.System == partSystem && partCalls == 1 ? "length" : "stop",
+        };
+        var stages = new List<string>();
+        var entries = Enumerable.Range(0, 400)
+            .Select(i => new TranscriptEntry("Я", $"Реплика номер {i}: обсуждаем интеграцию и сроки релиза.",
+                TimeSpan.FromSeconds(i * 5)))
+            .ToList();
+
+        await Collect(SummaryComposer.ComposeAsync(model, "fake", entries, new SyncProgress(stages.Add)));
+
+        var done = model.Calls.Where(c => c.System == partSystem).Skip(1).ToList();
+        Assert.All(entries, e => Assert.Single(done, p => p.User.Contains(e.Text + Environment.NewLine)));
+        Assert.DoesNotContain("оборвано", model.Calls[^1].User);
+        Assert.Contains("Конспект части 1 не уместился — делю её пополам…", stages);
+    }
+
+    [Fact]
     public async Task CloudModel_TakesWholeMeetingAtOnce()
     {
         var model = new FakeChatClient("итоги") { InputBudget = int.MaxValue };
