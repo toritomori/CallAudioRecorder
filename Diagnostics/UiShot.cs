@@ -6,7 +6,7 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 
-namespace CallAudioRecorder;
+namespace CallAudioRecorder.Diagnostics;
 
 /// <summary>
 /// Снимок окна для проверки вёрстки: рендерит MainWindow в PNG и заодно считает

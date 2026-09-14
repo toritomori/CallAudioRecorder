@@ -1,3 +1,5 @@
+// Пробник: в релизную сборку не попадает — его флаги регистрируются в DiagnosticModes только в Debug.
+#if DEBUG
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -5,7 +7,7 @@ using System.Text;
 using CallAudioRecorder.Services;
 using SherpaOnnx;
 
-namespace CallAudioRecorder;
+namespace CallAudioRecorder.Diagnostics;
 
 /// <summary>
 /// Самопроверка диаризации: два WAV с разными голосами. Каждый режется пополам,
@@ -152,3 +154,4 @@ public static class DiarSpike
     private static string Describe(Dictionary<string, int> counts) =>
         string.Join(", ", counts.OrderByDescending(p => p.Value).Select(p => $"{p.Key}: {p.Value}"));
 }
+#endif

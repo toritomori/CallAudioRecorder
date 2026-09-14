@@ -1,3 +1,5 @@
+// Пробник: в релизную сборку не попадает — его флаги регистрируются в DiagnosticModes только в Debug.
+#if DEBUG
 using System;
 using System.Diagnostics;
 using System.IO;
@@ -6,7 +8,7 @@ using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
 using SherpaOnnx;
 
-namespace CallAudioRecorder;
+namespace CallAudioRecorder.Diagnostics;
 
 /// <summary>
 /// Спайк производительности: распознаёт WAV моделью выбранного языка (GigaAM v3 или
@@ -111,3 +113,4 @@ public static class SttSpike
         return all.ToArray();
     }
 }
+#endif
