@@ -7,7 +7,13 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
     <ApplicationIcon>icon.ico</ApplicationIcon>
+    <!-- Тесты лежат в подпапке, а SDK по умолчанию собирает все *.cs под корнем проекта -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);CallAudioRecorder.Tests\**</DefaultItemExcludes>
   </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="CallAudioRecorder.Tests" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="NAudio" Version="2.3.0" />

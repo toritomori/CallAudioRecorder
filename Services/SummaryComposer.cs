@@ -77,8 +77,21 @@ public static class SummaryComposer
     /// Согласия и отказы («да», «нет», «хорошо», «понял») ОСТАЮТСЯ: короткое «да» бывает
     /// ответом на вопрос, от которого зависит решение встречи, и выкидывать его нельзя.
     /// </summary>
+    private const string FillerWord = @"(?:угу|ага|мгм|м+|э+|а+|ам|эм|ну|вот|так|uh+|um+|mm+|yeah|uh-huh)";
+
+    /// <summary>
+    /// Междометия, которые повторяют цепочкой: «э-э», «ага, ага», «ээ, мм». «А», «ну», «вот»
+    /// и «так» сюда не входят — из них складываются осмысленные реплики («А так?», «Вот так.»,
+    /// «Ну так.»), а короткий вопрос или ответ бывает тем, от чего зависит решение.
+    /// </summary>
+    private const string ChainWord = @"(?:угу|ага|мгм|м+|э+|ам|эм|uh+|um+|mm+|yeah|uh-huh)";
+
+    /// <summary>
+    /// Реплика целиком из междометий: одно любое («угу», «Ну.») или цепочка однозначных («Э-э...»).
+    /// Разделитель между повторами обязателен, иначе вложенные квантификаторы дают экспоненциальный перебор.
+    /// </summary>
     private static readonly Regex Filler = new(
-        @"^(?:угу|ага|мгм|м+|э+|а+|ам|эм|ну|вот|так|uh+|um+|mm+|yeah|uh-huh)[\s.,!?…-]*$",
+        $@"^(?:{FillerWord}|{ChainWord}(?:[\s.,!?…-]+{ChainWord})+)[\s.,!?…-]*$",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     public static IReadOnlyList<TranscriptEntry> WithoutFillers(IReadOnlyList<TranscriptEntry> entries)
@@ -139,7 +152,7 @@ public static class SummaryComposer
         return Math.Max(1024, Math.Min(usable, 24576)); // части крупнее 24k токенов модели уже плохо держат
     }
 
-    private static List<List<TranscriptEntry>> SplitByBudget(IReadOnlyList<TranscriptEntry> entries, int budget)
+    internal static List<List<TranscriptEntry>> SplitByBudget(IReadOnlyList<TranscriptEntry> entries, int budget)
     {
         var result = new List<List<TranscriptEntry>>();
         var current = new List<TranscriptEntry>();

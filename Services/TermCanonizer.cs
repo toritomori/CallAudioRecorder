@@ -120,7 +120,7 @@ public sealed class TermCanonizer
 
         for (int i = 0; i < tokens.Count; i++)
         {
-            // Сперва пара слов («Крейзи Геймс» → «Crazy Games»), потом одиночное. Пару берём,
+            // Сперва пара слов («Батл Пасс» → «Battle Pass»), потом одиночное. Пару берём,
             // только если слова разделены пробелом или дефисом: иначе замена съест соседнюю
             // реплику вместе с запятой — «BattlePass, да» превратился бы в «Battle Pass».
             var pair = i + 1 < tokens.Count && PairAllowed(text, tokens[i], tokens[i + 1])
