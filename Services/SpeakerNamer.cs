@@ -143,11 +143,11 @@ public static class SpeakerNamer
     /// Этого мало, когда модель зацикливается и копирует фразы транскрипта: на записи от 20.08
     /// «Вот» и «Там» прошли проверку, потому что распознавание пишет их отдельным предложением
     /// («Вот.»), и «Вот» отобрало метку у Вячеслава. Поэтому ещё два правила:
-    /// — слово, которое в транскрипте чаще написано со строчной, чем как имя, — не имя
-    ///   («Вот» 23 раза как имя и 111 со строчной; у настоящих имён строчных написаний нет).
-    ///   Сравниваются падежные формы (<see cref="IsForm"/>): «Поке» из того же ответа прошло
-    ///   бы по одному слову «поке» (1 как имя, 4 со строчной — вроде бы имя), но его форма
-    ///   «пока» встречается со строчной 20 раз против 3 — и «Поке» отобрало метку у Вячеслава;
+    /// — в русской записи слово, чьи падежные формы (<see cref="IsForm"/>) в транскрипте чаще
+    ///   написаны со строчной, чем как имя, — не имя: «Вот» 23 раза как имя и 111 со строчной,
+    ///   «Поке» — 3 против 20 (его форма «пока»), а у настоящих имён строчных форм нет.
+    ///   В английской записи правило не применяется: там имена совпадают с частыми словами
+    ///   (Will, Mark, May), и «will» со строчной отсеяло бы любого Уилла;
     /// — имя в чужом алфавите — не имя: латиница в русском транскрипте берётся только из
     ///   канонизации терминов по глоссарию (Poki, Google, Crazy Games), распознавание её не пишет.
     /// Настоящее имя, отсеянное по ошибке, оставит метку «Собеседник N», а пропущенное
@@ -176,12 +176,15 @@ public static class SpeakerNamer
                 rejected.Add($"{name} (не в алфавите языка записи)");
                 continue;
             }
-            int formsAsName = asName.Where(p => IsForm(p.Key, name, english)).Sum(p => p.Value);
-            int formsLower = lower.Where(p => IsForm(p.Key, name, english)).Sum(p => p.Value);
-            if (formsLower > formsAsName)
+            if (!english)
             {
-                rejected.Add($"{name} (со строчной {formsLower} раз, как имя {formsAsName})");
-                continue;
+                int formsAsName = asName.Where(p => IsForm(p.Key, name)).Sum(p => p.Value);
+                int formsLower = lower.Where(p => IsForm(p.Key, name)).Sum(p => p.Value);
+                if (formsLower > formsAsName)
+                {
+                    rejected.Add($"{name} (со строчной {formsLower} раз, как имя {formsAsName})");
+                    continue;
+                }
             }
             result.Add(name);
         }
@@ -190,31 +193,59 @@ public static class SpeakerNamer
         return result;
     }
 
-    /// <summary>Окончания, которые падеж прибавляет к основе имени: «Вер|у», «Артём|у», «Алексе|ю».</summary>
-    private static readonly HashSet<string> Endings = new(StringComparer.Ordinal)
-        { "", "а", "я", "ы", "и", "е", "у", "ю", "й", "ь", "ой", "ей", "ою", "ею", "ом", "ем", "ам", "ям", "ах", "ях" };
+    /// <summary>
+    /// Окончания падежных форм по последней букве имени: «Вера» — «Веры», «Верой»; «Илья» — «Ильи»,
+    /// «Ильёй»; «Андрей» — «Андрея», «Андреем»; «Игорь» — «Игоря». Только окончания своего типа:
+    /// общий список делал «жену» формой «Жени».
+    /// </summary>
+    private static readonly Dictionary<char, HashSet<string>> EndingsByLast = new()
+    {
+        ['а'] = ["а", "ы", "и", "е", "у", "ой", "ою"],
+        ['я'] = ["я", "и", "е", "ю", "ей", "ею"],
+        ['й'] = ["й", "я", "ю", "е", "ем"],
+        ['ь'] = ["ь", "я", "ю", "е", "ем", "и", "ей"],
+    };
+
+    /// <summary>Имена на другую гласную («Поке») склоняются как угодно — берём все окончания на гласную.</summary>
+    private static readonly HashSet<string> VowelEndings = ["а", "я", "ы", "и", "е", "у", "ю", "ой", "ей", "ою", "ею"];
+
+    /// <summary>
+    /// Имена на согласную: «Олег» — «Олега», «Олегу», «Олегом». Пустое окончание — только здесь:
+    /// у имени на гласную основа без окончания — уже другое слово («Надя» → «над», «Поля» → «пол»).
+    /// </summary>
+    private static readonly HashSet<string> ConsonantEndings = ["", "а", "у", "ом", "е"];
 
     /// <summary>
     /// Падежная форма имени: «Вере» и «Веру» — формы «Вера», а «верно» и «версия» — нет.
     /// Для сравнения «как имя / со строчной» основа из <see cref="Same"/> слишком широка:
-    /// основа «вер» накрыла бы «верно», и настоящая Вера отсеялась бы. В английском имена
-    /// не склоняются — там сравнивается слово целиком.
+    /// основа «вер» накрыла бы «верно», и настоящая Вера отсеялась бы. Совпадения со словами,
+    /// которые и вправду являются формой имени («любой» — «Люба»), так не отличить.
     /// </summary>
-    private static bool IsForm(string word, string name, bool english)
+    private static bool IsForm(string word, string name)
     {
         var w = Normalize(word);
         var n = Normalize(name);
         if (w == n) return true;
-        if (english || n.Length < 3) return false;
-        var stem = "аяеоиыуюйь".Contains(n[^1], StringComparison.Ordinal) ? n[..^1] : n;
-        return w.StartsWith(stem, StringComparison.Ordinal) && Endings.Contains(w[stem.Length..]);
+        if (n.Length < 3) return false;
+        char last = n[^1];
+        var (stem, endings) = EndingsByLast.TryGetValue(last, out var byLast) ? (n[..^1], byLast)
+            : "еиоуыюэ".Contains(last, StringComparison.Ordinal) ? (n[..^1], VowelEndings)
+            : (n, ConsonantEndings);
+        return w.StartsWith(stem, StringComparison.Ordinal) && endings.Contains(w[stem.Length..]);
     }
+
+    /// <summary>Слов в предложении «Имя, …», которое ещё похоже на передачу слова («Слава, давай.»).</summary>
+    private const int HandoverSentenceWords = 5;
 
     /// <summary>
     /// Как слова написаны в транскрипте. «Как имя» — с заглавной буквы не в начале предложения
-    /// («созвониться с Людмилой») либо целым предложением из одного слова: так распознавание
-    /// оформляет передачу слова в конце реплики («…в пятницу был два. Ира.»). Строчные
-    /// написания хранятся нормализованными — сравниваются по падежным формам.
+    /// («созвониться с Людмилой»), целым предложением из одного слова — так распознавание
+    /// оформляет передачу слова в конце реплики («…в пятницу был два. Ира.»), — или с запятой
+    /// в начале короткого предложения: «Слава, давай.» — самая частая передача слова, и без неё
+    /// имя, звучащее только так, проигрывало строчному «ну слава богу». Длинное «Вот, у меня всё
+    /// по плану…» в счёт не идёт: без ограничения длины «Вот» на записи от 17.08 набирало 41
+    /// написание как имя против 53 строчных — почти прошло бы. Строчные написания хранятся
+    /// нормализованными и сравниваются по падежным формам.
     /// </summary>
     private static (Dictionary<string, int> AsName, Dictionary<string, int> Lower) CountWritings(
         IReadOnlyList<TranscriptEntry> entries)
@@ -225,23 +256,31 @@ public static class SpeakerNamer
         {
             foreach (var sentence in Regex.Split(entry.Text, @"(?<=[.!?…])\s+"))
             {
-                var words = Regex.Matches(sentence, @"\p{L}[\p{L}\p{Nd}]*")
-                    .Select(m => m.Value).ToArray();
+                var words = Regex.Matches(sentence, @"\p{L}[\p{L}\p{Nd}]*").ToArray();
                 for (int i = 0; i < words.Length; i++)
                 {
-                    if (char.IsLower(words[i][0]))
+                    var word = words[i].Value;
+                    if (char.IsLower(word[0]))
                     {
-                        var key = Normalize(words[i]);
+                        var key = Normalize(word);
                         lower[key] = lower.GetValueOrDefault(key) + 1;
                     }
-                    else if (i > 0 || words.Length == 1)
+                    else if (i > 0 || words.Length == 1 ||
+                             (words.Length <= HandoverSentenceWords && CommaFollows(sentence, words[0])))
                     {
-                        asName[words[i]] = asName.GetValueOrDefault(words[i]) + 1;
+                        asName[word] = asName.GetValueOrDefault(word) + 1;
                     }
                 }
             }
         }
         return (asName, lower);
+    }
+
+    /// <summary>Стоит ли сразу после слова запятая: «Слава, давай».</summary>
+    private static bool CommaFollows(string sentence, Match word)
+    {
+        var rest = sentence.AsSpan(word.Index + word.Length).TrimStart();
+        return rest.Length > 0 && rest[0] == ',';
     }
 
     /// <summary>

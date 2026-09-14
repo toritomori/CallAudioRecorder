@@ -162,6 +162,56 @@ public class SpeakerNamerTests
     }
 
     [Fact]
+    public async Task NameEndingInVowel_BareStemIsNotItsForm()
+    {
+        // Основа «Нади» — «над»: с пустым окончанием предлог «над» считался формой имени,
+        // и настоящая Надя отсеивалась как слово, которое чаще пишут со строчной.
+        var entries = Transcript(
+            ("Я", "Работаем над задачей, над билдом и над релизом. Надя."),
+            ("Собеседник 1", "Я над дизайном сижу."),
+            ("Я", "Надя, давай ещё раз."),
+            ("Собеседник 1", "Готово."));
+
+        var names = await Detect(new FakeChatClient("Надя"), entries);
+
+        Assert.Equal("Надя", names["Собеседник 1"]);
+    }
+
+    [Fact]
+    public async Task HandoverWithCommaAtSentenceStart_CountsAsWrittenName()
+    {
+        // «Слава, давай.» — самая частая передача слова, но заглавная в начале предложения
+        // не считалась написанием имени. Тогда два «ну слава богу» перевешивали единственное
+        // «Слава.», и Вячеслав оставался меткой.
+        var entries = Transcript(
+            ("Я", "Всё, ну слава богу, закрыли. Слава, давай."),
+            ("Собеседник 1", "У меня всё готово."),
+            ("Я", "Отлично, ну слава богу. Слава, давай про билд."),
+            ("Собеседник 1", "Билд собран."),
+            ("Я", "Слава."),
+            ("Собеседник 1", "Всё."));
+
+        var names = await Detect(new FakeChatClient("Слава"), entries);
+
+        Assert.Equal("Слава", names["Собеседник 1"]);
+    }
+
+    [Fact]
+    public async Task EnglishNameThatIsAlsoCommonWord_IsKept()
+    {
+        // В английском имена совпадают с частыми словами: «will» со строчной встречается
+        // постоянно, и правило строчных отсеяло бы любого Уилла. Там оно не применяется.
+        var entries = Transcript(
+            ("Me", "We will ship it, and we will test it. Next, Will."),
+            ("Speaker 1", "I will check the build."));
+
+        var names = await SpeakerNamer.DetectAsync(new FakeChatClient("Will"), "fake", entries,
+            Languages.English, ownerName: "Anton");
+
+        Assert.Equal("Will", names["Speaker 1"]);
+    }
+
+    [Fact]
     public async Task TermsInForeignAlphabet_AreNotNames()
     {
         // Латиница в русском транскрипте — только канонизированные термины глоссария:
