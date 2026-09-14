@@ -128,6 +128,68 @@ public class SpeakerNamerTests
     }
 
     [Fact]
+    public async Task WordsWrittenLowercaseMoreOften_AreNotNames()
+    {
+        // Зациклившаяся модель копирует фразы транскрипта, и «Вот» проходит проверку «написано
+        // как имя»: распознавание ставит его отдельным предложением. На записи от 20.08 «Вот»
+        // так отобрало метку у Вячеслава — а со строчной «вот» там написано в пять раз чаще.
+        var entries = Transcript(
+            ("Я", "Ну вот, начинаем. Дальше, Дима."),
+            ("Собеседник 1", "Вот у меня всё по плану, вот такие дела. Вот."),
+            ("Собеседник 2", "А у меня вот вопрос по билду."));
+
+        var names = await Detect(new FakeChatClient("Вот, Дима, вот, Вот"), entries);
+
+        Assert.Equal("Дима", names["Собеседник 1"]);
+        Assert.False(names.ContainsKey("Собеседник 2"));
+    }
+
+    [Fact]
+    public async Task LowercaseCheck_ComparesCaseForms()
+    {
+        // «Поке» со строчной как слово целиком не пишется, зато его форма «пока» — постоянно:
+        // на записи от 20.08 оно так отобрало метку у Вячеслава. А «верно» — не форма «Веры»,
+        // и настоящее имя из-за него отсеиваться не должно.
+        var entries = Transcript(
+            ("Я", "Ну пока всё, давайте дальше. Вера."),
+            ("Собеседник 1", "У меня пока без новостей, всё верно. Поке."),
+            ("Собеседник 2", "Пока не смотрел."));
+
+        var names = await Detect(new FakeChatClient("Вера, Поке"), entries);
+
+        Assert.Equal("Вера", names["Собеседник 1"]);
+        Assert.False(names.ContainsKey("Собеседник 2"));
+    }
+
+    [Fact]
+    public async Task TermsInForeignAlphabet_AreNotNames()
+    {
+        // Латиница в русском транскрипте — только канонизированные термины глоссария:
+        // «Poki.» отдельным предложением иначе выглядит как передача слова.
+        var entries = Transcript(
+            ("Собеседник 1", "Билд уже выложили. Poki."),
+            ("Собеседник 2", "Там всё висит, проверил."));
+
+        var names = await Detect(new FakeChatClient("Poki"), entries);
+
+        Assert.Empty(names);
+    }
+
+    [Fact]
+    public async Task EnglishTranscript_KeepsLatinNames()
+    {
+        // Правило алфавита зеркально: в английской записи латинские имена — и есть имена.
+        var entries = Transcript(
+            ("Me", "Thanks everyone. Next, Mike."),
+            ("Speaker 1", "All good on my side."));
+
+        var names = await SpeakerNamer.DetectAsync(new FakeChatClient("Mike"), "fake", entries,
+            Languages.English, ownerName: "Anton");
+
+        Assert.Equal("Mike", names["Speaker 1"]);
+    }
+
+    [Fact]
     public async Task NamesAreAskedWithZeroTemperature_AndOwnerIsNotAskedWhenKnown()
     {
         var model = new FakeChatClient("Дима");

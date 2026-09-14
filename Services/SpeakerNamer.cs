@@ -110,7 +110,7 @@ public static class SpeakerNamer
         var answer = await ollama.ChatAsync(model, system, user, ResponseTokens, ct: ct, temperature: 0).ConfigureAwait(false);
         trace?.Add($"ответ модели:{Environment.NewLine}{answer.Trim()}");
 
-        var candidates = ExtractNames(answer, entries);
+        var candidates = ExtractNames(answer, entries, language ?? Languages.Russian, trace);
         trace?.Add($"кандидаты: {(candidates.Count == 0 ? "—" : string.Join(", ", candidates))}");
 
         // Имя владельца записи собеседнику доставаться не должно: на планёрках к нему
@@ -139,44 +139,109 @@ public static class SpeakerNamer
     /// а отсев делает транскрипт: имя должно в нём встречаться, причём хотя бы раз с заглавной
     /// буквы в СЕРЕДИНЕ предложения. Так отсеиваются и «Значит» из рассуждений модели,
     /// и выдуманные участники, которых в записи не было.
+    ///
+    /// Этого мало, когда модель зацикливается и копирует фразы транскрипта: на записи от 20.08
+    /// «Вот» и «Там» прошли проверку, потому что распознавание пишет их отдельным предложением
+    /// («Вот.»), и «Вот» отобрало метку у Вячеслава. Поэтому ещё два правила:
+    /// — слово, которое в транскрипте чаще написано со строчной, чем как имя, — не имя
+    ///   («Вот» 23 раза как имя и 111 со строчной; у настоящих имён строчных написаний нет).
+    ///   Сравниваются падежные формы (<see cref="IsForm"/>): «Поке» из того же ответа прошло
+    ///   бы по одному слову «поке» (1 как имя, 4 со строчной — вроде бы имя), но его форма
+    ///   «пока» встречается со строчной 20 раз против 3 — и «Поке» отобрало метку у Вячеслава;
+    /// — имя в чужом алфавите — не имя: латиница в русском транскрипте берётся только из
+    ///   канонизации терминов по глоссарию (Poki, Google, Crazy Games), распознавание её не пишет.
+    /// Настоящее имя, отсеянное по ошибке, оставит метку «Собеседник N», а пропущенное
+    /// служебное слово станет чужим «именем» в задачах, — поэтому правила строже, а не мягче.
+    /// На пяти транскриптах корпуса правила не задели ни одного настоящего имени.
     /// </summary>
-    private static HashSet<string> ExtractNames(string answer, IReadOnlyList<TranscriptEntry> entries)
+    private static HashSet<string> ExtractNames(string answer, IReadOnlyList<TranscriptEntry> entries,
+        LanguageProfile language, ICollection<string>? trace)
     {
-        var midSentence = MidSentenceCapitalized(entries);
+        var (asName, lower) = CountWritings(entries);
+        bool english = language.Language == TranscriptionLanguage.English;
         var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var rejected = new List<string>();
 
         foreach (Match m in Regex.Matches(answer, @"\p{Lu}\p{Ll}{2,}"))
         {
             var name = m.Value;
-            if (Languages.IsMeLabel(name)) continue;
+            if (Languages.IsMeLabel(name) || !seen.Add(name)) continue;
             // Сверяем с точностью до падежа: в транскрипте имя чаще стоит в косвенном
             // («Передаю слово Артёму»), а модель называет его в именительном.
-            if (midSentence.Any(word => Same(word, name))) result.Add(name);
+            if (!asName.Keys.Any(word => Same(word, name))) continue;
+
+            if (!language.HotwordFilter(name))
+            {
+                rejected.Add($"{name} (не в алфавите языка записи)");
+                continue;
+            }
+            int formsAsName = asName.Where(p => IsForm(p.Key, name, english)).Sum(p => p.Value);
+            int formsLower = lower.Where(p => IsForm(p.Key, name, english)).Sum(p => p.Value);
+            if (formsLower > formsAsName)
+            {
+                rejected.Add($"{name} (со строчной {formsLower} раз, как имя {formsAsName})");
+                continue;
+            }
+            result.Add(name);
         }
+
+        if (rejected.Count > 0) trace?.Add($"отсеяны: {string.Join(", ", rejected)}");
         return result;
     }
 
+    /// <summary>Окончания, которые падеж прибавляет к основе имени: «Вер|у», «Артём|у», «Алексе|ю».</summary>
+    private static readonly HashSet<string> Endings = new(StringComparer.Ordinal)
+        { "", "а", "я", "ы", "и", "е", "у", "ю", "й", "ь", "ой", "ей", "ою", "ею", "ом", "ем", "ам", "ям", "ах", "ях" };
+
     /// <summary>
-    /// Основы слов, которые в транскрипте написаны так, как пишут имена собственные: с заглавной
-    /// буквы не в начале предложения («созвониться с Людмилой») либо целым предложением из одного
-    /// слова — так распознавание оформляет передачу слова в конце реплики («…в пятницу был два. Ира.»).
+    /// Падежная форма имени: «Вере» и «Веру» — формы «Вера», а «верно» и «версия» — нет.
+    /// Для сравнения «как имя / со строчной» основа из <see cref="Same"/> слишком широка:
+    /// основа «вер» накрыла бы «верно», и настоящая Вера отсеялась бы. В английском имена
+    /// не склоняются — там сравнивается слово целиком.
     /// </summary>
-    private static HashSet<string> MidSentenceCapitalized(IReadOnlyList<TranscriptEntry> entries)
+    private static bool IsForm(string word, string name, bool english)
     {
-        var result = new HashSet<string>(StringComparer.Ordinal);
+        var w = Normalize(word);
+        var n = Normalize(name);
+        if (w == n) return true;
+        if (english || n.Length < 3) return false;
+        var stem = "аяеоиыуюйь".Contains(n[^1], StringComparison.Ordinal) ? n[..^1] : n;
+        return w.StartsWith(stem, StringComparison.Ordinal) && Endings.Contains(w[stem.Length..]);
+    }
+
+    /// <summary>
+    /// Как слова написаны в транскрипте. «Как имя» — с заглавной буквы не в начале предложения
+    /// («созвониться с Людмилой») либо целым предложением из одного слова: так распознавание
+    /// оформляет передачу слова в конце реплики («…в пятницу был два. Ира.»). Строчные
+    /// написания хранятся нормализованными — сравниваются по падежным формам.
+    /// </summary>
+    private static (Dictionary<string, int> AsName, Dictionary<string, int> Lower) CountWritings(
+        IReadOnlyList<TranscriptEntry> entries)
+    {
+        var asName = new Dictionary<string, int>(StringComparer.Ordinal);
+        var lower = new Dictionary<string, int>(StringComparer.Ordinal);
         foreach (var entry in entries)
         {
             foreach (var sentence in Regex.Split(entry.Text, @"(?<=[.!?…])\s+"))
             {
                 var words = Regex.Matches(sentence, @"\p{L}[\p{L}\p{Nd}]*")
                     .Select(m => m.Value).ToArray();
-                if (words.Length == 0) continue;
-                if (words.Length == 1 && char.IsUpper(words[0][0])) result.Add(words[0]);
-                foreach (var word in words.Skip(1))
-                    if (char.IsUpper(word[0])) result.Add(word);
+                for (int i = 0; i < words.Length; i++)
+                {
+                    if (char.IsLower(words[i][0]))
+                    {
+                        var key = Normalize(words[i]);
+                        lower[key] = lower.GetValueOrDefault(key) + 1;
+                    }
+                    else if (i > 0 || words.Length == 1)
+                    {
+                        asName[words[i]] = asName.GetValueOrDefault(words[i]) + 1;
+                    }
+                }
             }
         }
-        return result;
+        return (asName, lower);
     }
 
     /// <summary>
