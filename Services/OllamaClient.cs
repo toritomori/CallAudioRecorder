@@ -127,6 +127,7 @@ public sealed class OllamaClient : IChatClient, IDisposable
     /// Сколько токенов зарезервировать под ответ. Окно Ollama делится между промптом и генерацией:
     /// если промпт съел его целиком, модель обрывается на нескольких строках (done_reason = "length"),
     /// а промпт длиннее окна Ollama молча урезает — вместе с системной инструкцией.
+    /// Это же и потолок ответа: длиннее модель не напишет (см. <see cref="ChatOptions"/>).
     /// </param>
     /// <param name="outcome">Необязательная «расписка»: причина остановки генерации.</param>
     /// <param name="temperature">
@@ -139,14 +140,8 @@ public sealed class OllamaClient : IChatClient, IDisposable
         double temperature = DefaultTemperature,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
-        var options = new Dictionary<string, object> { ["temperature"] = temperature };
         var info = await GetModelInfoAsync(model, ct).ConfigureAwait(false);
-        if (!info.IsRemote)
-        {
-            int need = EstimateTokens(systemPrompt) + EstimateTokens(userMessage) + responseTokens;
-            int cap = Math.Max(MinContext, Math.Min(LocalContextCap, info.ContextLimit));
-            options["num_ctx"] = Math.Clamp(RoundUpTo(need, 4096), MinContext, cap);
-        }
+        var options = ChatOptions(info.IsRemote, info.ContextLimit, systemPrompt, userMessage, responseTokens, temperature);
 
         var payload = new
         {
@@ -203,6 +198,30 @@ public sealed class OllamaClient : IChatClient, IDisposable
         return sb.ToString();
     }
 
+    /// <summary>
+    /// Параметры генерации. Резерв ответа — это и потолок генерации (num_predict): без него
+    /// зациклившаяся модель пишет, пока не заполнит окно. На записи от 20.08 qwen3.5-text:9b
+    /// вместо списка имён (резерв 256 токенов) раз за разом копировала фразы транскрипта —
+    /// 144 с вместо 10, а из скопированных фраз в кандидаты попали «Вот» и «Там».
+    /// Облачным моделям num_ctx не отправляется: их окно задаёт сервер.
+    /// </summary>
+    internal static Dictionary<string, object> ChatOptions(bool isRemote, int contextLimit,
+        string systemPrompt, string userMessage, int responseTokens, double temperature)
+    {
+        var options = new Dictionary<string, object>
+        {
+            ["temperature"] = temperature,
+            ["num_predict"] = responseTokens,
+        };
+        if (!isRemote)
+        {
+            int need = EstimateTokens(systemPrompt) + EstimateTokens(userMessage) + responseTokens;
+            int cap = Math.Max(MinContext, Math.Min(LocalContextCap, contextLimit));
+            options["num_ctx"] = Math.Clamp(RoundUpTo(need, 4096), MinContext, cap);
+        }
+        return options;
+    }
+
     private static int RoundUpTo(int value, int step) => (value + step - 1) / step * step;
 
     private async Task<HttpResponseMessage> SendChatAsync(object payload, string model, CancellationToken ct)
@@ -237,7 +256,7 @@ public sealed class OllamaClient : IChatClient, IDisposable
 /// <summary>Чем закончилась генерация — заполняется по последнему кадру стрима.</summary>
 public sealed class ChatOutcome
 {
-    /// <summary>«stop» — модель договорила, «length» — упёрлась в окно контекста.</summary>
+    /// <summary>«stop» — модель договорила, «length» — упёрлась в окно контекста или в потолок ответа.</summary>
     public string? DoneReason { get; internal set; }
 
     public bool HitContextLimit => DoneReason == "length";

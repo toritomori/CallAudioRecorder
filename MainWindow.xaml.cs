@@ -545,7 +545,7 @@ public partial class MainWindow : Window
 
             File.WriteAllText(SummaryPath(_lastFile), sb.ToString(), Encoding.UTF8);
             Status.Text = outcome.HitContextLimit
-                ? $"Итоги оборвались: модели «{model}» не хватило окна контекста. Сохранено: {Path.GetFileName(SummaryPath(_lastFile))}"
+                ? $"Итоги оборвались: модель «{model}» упёрлась в окно контекста или в предел длины ответа. Сохранено: {Path.GetFileName(SummaryPath(_lastFile))}"
                 : $"Итоги сохранены: {Path.GetFileName(SummaryPath(_lastFile))}";
         }
         catch (OperationCanceledException)
