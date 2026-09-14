@@ -12,73 +12,66 @@ namespace CallAudioRecorder.Services;
 /// <summary>
 /// Замена меток «Собеседник N» именами, которые прозвучали в разговоре.
 ///
-/// Зачем: диаризация различает голоса, но не знает, кого как зовут, — и таблица задач
-/// в итогах выходит с исполнителями «Собеседник 12». При этом на планёрках люди постоянно
-/// обращаются друг к другу по имени («Передаю слово Артёму», «Алексей, ты хотел сказать?»),
-/// так что имя обычно стоит прямо в соседней реплике. Модель для итогов уже угадывает эту
-/// связь сама, но наполовину и только внутри своего ответа — здесь она делается один раз
-/// и попадает в сам транскрипт.
+/// Зачем: диаризация различает голоса, но не знает, кого как зовут, — и в списке задач
+/// исполнителем оказывается «Собеседник 12». При этом на планёрках люди постоянно
+/// обращаются друг к другу по имени и передают слово, так что имя обычно стоит прямо
+/// в соседней реплике.
 ///
-/// Выдумывать имена модели не даём: имя принимается, только если оно действительно
-/// встречается в транскрипте.
+/// Как: у модели спрашивается ТОЛЬКО список имён, звучавших во встрече, а кто из них кто —
+/// решается детерминированно, по правилу «назвал имя — говорит следующий». Привязку у модели
+/// спрашивать бесполезно: она путает направление обращения (на реальной планёрке всё смещалось
+/// на одного — «Дальше, Дима» отдавало имя Дима тому, кто это произнёс), а 9B-модель на такой
+/// вопрос вместо формата «метка = имя» выдаёт поток рассуждений, из которого не разобрать ничего.
+///
+/// Не уверены — не переименовываем: метка «Собеседник N» честнее чужого имени в задачах.
 /// </summary>
 public static class SpeakerNamer
 {
-    /// <summary>Сколько токенов резервировать под ответ: несколько строк «метка = имя».</summary>
-    private const int ResponseTokens = 512;
+    /// <summary>Сколько токенов резервировать под ответ: список имён через запятую.</summary>
+    private const int ResponseTokens = 256;
 
-    private const string SystemRu =
+    /// <summary>
+    /// Слов от начала и от конца реплики, где имя вообще может быть обращением: в середине
+    /// получасового спора имена звучат про третьих лиц, и голос оттуда только шумит.
+    /// </summary>
+    private const int HeadWords = 15, TailWords = 30;
+
+    /// <summary>
+    /// Вес голоса. Уверенным считается только явная передача слова («Дальше, Дима.», «Ира.»,
+    /// «Передаю слово давай Людмиле») — без неё имя не назначается вовсе: на реальной планёрке
+    /// пара упоминаний в третьем лице сделала «Собеседника 6» Андреем, которого там не было.
+    /// </summary>
+    private const int StrongWeight = 4, WeakWeight = 1;
+
+    /// <summary>
+    /// Слова, рядом с которыми имя — почти наверняка передача слова, а не разговор о человеке.
+    /// </summary>
+    private static readonly HashSet<string> HandoverMarkers = new(StringComparer.Ordinal)
+    {
+        "передаю", "передам", "слово", "дальше", "давай", "давайте", "можно", "очередь",
+        "расскажи", "рассказывай", "слушаем", "начинай", "тебя", "тебе", "твоя",
+        "over", "next", "ahead", "turn", "hand", "tell", "floor", "you", "your",
+    };
+
+    private const string NamesSystemRu =
         """
-        Ты определяешь по транскрипту встречи, как зовут её участников.
+        По транскрипту встречи перечисли ИМЕНА её участников — те, что звучат в самом разговоре:
+        к людям обращаются по имени, передают слово, представляются.
 
-        Спикеры размечены автоматически по голосу: «Я» — владелец записи, «Собеседник 1»,
-        «Собеседник 2», … — остальные. Имена участников звучат в самом разговоре: к людям
-        обращаются по имени, передают слово, представляются.
-
-        Ответь строками строго вида:
-        Я = Имя | точная цитата из транскрипта
-        Собеседник 1 = Имя | точная цитата из транскрипта
-        Собеседник 2 = ?
-
-        Правила:
-        - Первая строка — имя владельца записи (метка «Я»), если оно прозвучало.
-        - Дальше одна строка на каждую метку из транскрипта, в том же написании.
-        - Цитата — несколько слов ДОСЛОВНО из транскрипта, по которым видно, что это тот
-          самый человек: обращение к нему, передача слова, представление.
-        - ВАЖНО: обращение по имени указывает на того, КОМУ говорят, а не на говорящего.
-          Если «Собеседник 3» произносит «Антон, сорри, поправлю», то Антон — это НЕ
-          Собеседник 3, а тот, кто отвечает следующим. Цитату бери из реплики ДРУГОГО спикера.
-        - Имя — как его произносят в разговоре, в именительном падеже («Артёму» → «Артём»).
-        - Если имя не прозвучало или ты не уверен — ставь «?» без цитаты. Догадки хуже, чем «?».
-        - Не приписывай одно имя двум разным меткам.
-        - Никаких пояснений, только строки «метка = имя | цитата».
+        Ответь одной строкой: имена через запятую, каждое в именительном падеже и с заглавной
+        буквы («Артёму» → «Артём»). Только имена людей — не названия проектов, команд и задач.
+        Если имён не прозвучало — ответь «?». Никаких пояснений.
         """;
 
-    private const string SystemEn =
+    private const string NamesSystemEn =
         """
-        You work out the participants' names from a meeting transcript.
+        From the meeting transcript, list the NAMES of its participants — the ones actually said
+        in the conversation: people address each other by name, hand over the floor, introduce
+        themselves.
 
-        Speakers are labelled automatically by voice: "Me" is the owner of the recording,
-        "Speaker 1", "Speaker 2", … are the others. Their names are said in the conversation
-        itself: people address each other by name, hand over the floor, introduce themselves.
-
-        Answer with lines strictly in this form:
-        Me = Name | exact quote from the transcript
-        Speaker 1 = Name | exact quote from the transcript
-        Speaker 2 = ?
-
-        Rules:
-        - The first line is the recording owner's name (label "Me"), if it was said.
-        - Then one line per label found in the transcript, spelled the same way.
-        - The quote is a few words taken VERBATIM from the transcript showing this is the
-          person in question: someone addressing them, handing over the floor, introducing them.
-        - IMPORTANT: addressing someone by name points at the person being spoken TO, not at
-          the speaker. If "Speaker 3" says "Anton, sorry, let me correct you", then Anton is
-          NOT Speaker 3 but whoever answers next. Take the quote from ANOTHER speaker's line.
-        - Use the name as it is said in the conversation, in its base form.
-        - If the name was not said, or you are unsure, put "?" with no quote. A guess is worse.
-        - Do not give the same name to two different labels.
-        - No explanations, only the "label = name | quote" lines.
+        Answer with a single line: names separated by commas, each capitalised and in its base
+        form. People's names only — no project, team or task names. If no names were said,
+        answer "?". No explanations.
         """;
 
     /// <summary>
@@ -98,77 +91,242 @@ public static class SpeakerNamer
     }
 
     /// <summary>Карта «метка спикера → имя». Пустая, если ничего не удалось определить.</summary>
-    /// <param name="trace">Куда сложить сырой ответ модели и отброшенные строки — для самотеста.</param>
+    /// <param name="trace">Куда сложить ответ модели, кандидатов и голоса — для самотеста.</param>
     public static async Task<IReadOnlyDictionary<string, string>> DetectAsync(
         OllamaClient ollama, string model, IReadOnlyList<TranscriptEntry> entries,
         LanguageProfile? language = null, CancellationToken ct = default,
         ICollection<string>? trace = null, string? ownerName = null)
     {
-        var result = new Dictionary<string, string>();
-        var labels = entries.Select(e => e.Speaker).Where(s => !Languages.IsMeLabel(s)).Distinct().ToList();
-        if (labels.Count == 0) return result;
+        var labels = entries.Select(e => e.Speaker).Where(s => !Languages.IsMeLabel(s))
+            .Distinct().ToHashSet();
+        if (labels.Count == 0) return new Dictionary<string, string>();
 
         bool english = language?.Language == TranscriptionLanguage.English;
-        string system = english ? SystemEn : SystemRu;
 
         int budget = await ollama.GetInputBudgetAsync(model, ResponseTokens, ct);
+        var system = english ? NamesSystemEn : NamesSystemRu;
         var user = BuildMessage(entries, budget - OllamaClient.EstimateTokens(system) - 256, english);
-        // Температура 0: на 0.3 разметка менялась от прогона к прогону — то пять имён, то одно.
+        // Температура 0: на 0.3 список имён менялся от прогона к прогону.
         var answer = await ollama.ChatAsync(model, system, user, ResponseTokens, ct: ct, temperature: 0);
         trace?.Add($"ответ модели:{Environment.NewLine}{answer.Trim()}");
 
-        // Имя засчитывается, только если оно звучало в разговоре: так модель не может
-        // «дорисовать» участника, которого в записи не было.
-        var text = string.Join(" ", entries.Select(e => e.Text));
-        var spoken = new HashSet<string>(
-            Regex.Matches(text, @"\p{L}{2,}").Select(m => m.Value.ToLowerInvariant()));
-        // Реплики по спикерам: по ним проверяется не только наличие цитаты, но и то,
-        // что она взята у КОГО-ТО ДРУГОГО — к себе по имени не обращаются.
-        var byLabel = entries
-            .GroupBy(e => e.Speaker)
-            .ToDictionary(g => g.Key, g => Normalize(string.Join(" ", g.Select(e => e.Text))));
-
-        var lines = Regex.Matches(answer, @"^\s*([^=|]+?)\s*=\s*([^|]+?)\s*(?:\|\s*(.*?))?\s*$",
-                RegexOptions.Multiline)
-            .Select(m => (Label: m.Groups[1].Value.Trim(),
-                          Name: m.Groups[2].Value.Trim().Trim('«', '»', '"', '.', ','),
-                          Quote: m.Groups[3].Value.Trim()))
-            .ToList();
+        var candidates = ExtractNames(answer, entries);
+        trace?.Add($"кандидаты: {(candidates.Count == 0 ? "—" : string.Join(", ", candidates))}");
 
         // Имя владельца записи собеседнику доставаться не должно: на планёрках к нему
-        // обращаются чаще всех. Строке «Я = …» из общего ответа доверять нельзя — на трёх
-        // реальных встречах она называла владельцем то одного собеседника, то другого,
-        // а отдельный короткий вопрос каждый раз давал верное имя.
-        var taken = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // обращаются чаще всех, и любое такое обращение — голос за следующего говорящего.
         var owner = string.IsNullOrWhiteSpace(ownerName)
             ? await AskOwnerAsync(ollama, model, user, english, ct)
             : ownerName.Trim();
-        if (owner is not null) taken.Add(owner);
+        if (owner is not null) candidates.RemoveWhere(n => Same(n, owner));
         trace?.Add($"владелец записи: {owner ?? "не определён"}" +
                    (string.IsNullOrWhiteSpace(ownerName) ? " (определён моделью)" : " (из настроек)"));
 
-        foreach (var (label, name, quote) in lines)
+        if (candidates.Count == 0) return new Dictionary<string, string>();
+
+        var votes = CollectVotes(entries, candidates, labels);
+        foreach (var (label, vote) in votes.OrderBy(p => p.Key, StringComparer.Ordinal))
+            trace?.Add($"голоса «{label}»: " + string.Join(", ", vote.Weight
+                .OrderByDescending(p => p.Value)
+                .Select(p => $"{p.Key}={p.Value}{(vote.Confirmed.Contains(p.Key) ? " (передача слова)" : "")}")));
+
+        return Resolve(votes, trace);
+    }
+
+    /// <summary>
+    /// Имена из ответа модели, оставшиеся после проверки по самому транскрипту. Модель может
+    /// вместо списка начать рассуждать вслух — поэтому берутся все слова с заглавной буквы,
+    /// а отсев делает транскрипт: имя должно в нём встречаться, причём хотя бы раз с заглавной
+    /// буквы в СЕРЕДИНЕ предложения. Так отсеиваются и «Значит» из рассуждений модели,
+    /// и выдуманные участники, которых в записи не было.
+    /// </summary>
+    private static HashSet<string> ExtractNames(string answer, IReadOnlyList<TranscriptEntry> entries)
+    {
+        var midSentence = MidSentenceCapitalized(entries);
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (Match m in Regex.Matches(answer, @"\p{Lu}\p{Ll}{2,}"))
         {
-            // Саму метку «Я» не трогаем: на неё завязан TranscriptEntry.IsMe.
-            if (!labels.Contains(label)) continue;
-            if (name.Length < 2 || name == "?" || name.Contains(' ')) continue;
-            if (taken.Contains(name)) continue;
-            if (!spoken.Contains(name.ToLowerInvariant()) && !SpokenInflected(spoken, name)) continue;
-            if (result.ContainsValue(name)) continue; // одно имя на двух метках — значит модель гадает
-            var source = QuoteSource(byLabel, quote);
-            if (source is null)
+            var name = m.Value;
+            if (Languages.IsMeLabel(name)) continue;
+            // Сверяем с точностью до падежа: в транскрипте имя чаще стоит в косвенном
+            // («Передаю слово Артёму»), а модель называет его в именительном.
+            if (midSentence.Any(word => Same(word, name))) result.Add(name);
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Основы слов, которые в транскрипте написаны так, как пишут имена собственные: с заглавной
+    /// буквы не в начале предложения («созвониться с Людмилой») либо целым предложением из одного
+    /// слова — так распознавание оформляет передачу слова в конце реплики («…в пятницу был два. Ира.»).
+    /// </summary>
+    private static HashSet<string> MidSentenceCapitalized(IReadOnlyList<TranscriptEntry> entries)
+    {
+        var result = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var entry in entries)
+        {
+            foreach (var sentence in Regex.Split(entry.Text, @"(?<=[.!?…])\s+"))
             {
-                trace?.Add($"отброшено «{label} = {name}»: цитата «{quote}» в транскрипте не найдена");
-                continue; // не смогла показать место в тексте — значит гадала
+                var words = Regex.Matches(sentence, @"\p{L}[\p{L}\p{Nd}]*")
+                    .Select(m => m.Value).ToArray();
+                if (words.Length == 0) continue;
+                if (words.Length == 1 && char.IsUpper(words[0][0])) result.Add(words[0]);
+                foreach (var word in words.Skip(1))
+                    if (char.IsUpper(word[0])) result.Add(word);
             }
-            if (source == label && StartsWithName(quote, name))
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Голоса «метка = имя». Обращение и передача слова указывают на того, кто говорит
+    /// СЛЕДУЮЩИМ, а не на говорящего: «Дальше, Дима» произносит не Дима. Это и есть место,
+    /// где раньше разметка уезжала на одного человека.
+    /// </summary>
+    private static Dictionary<string, Vote> CollectVotes(
+        IReadOnlyList<TranscriptEntry> entries, HashSet<string> names, HashSet<string> labels)
+    {
+        var votes = new Dictionary<string, Vote>(StringComparer.Ordinal);
+
+        void Add(string label, string name, bool strong)
+        {
+            if (!labels.Contains(label)) return;
+            var vote = votes.TryGetValue(label, out var existing) ? existing : votes[label] = new Vote();
+            vote.Weight[name] = vote.Weight.GetValueOrDefault(name) + (strong ? StrongWeight : WeakWeight);
+            if (strong) vote.Confirmed.Add(name);
+        }
+
+        for (int i = 0; i < entries.Count; i++)
+        {
+            var next = NextSpeaker(entries, i);
+            foreach (var (name, strong, self) in Mentions(entries[i].Text, names))
             {
-                trace?.Add($"отброшено «{label} = {name}»: в цитате «{quote}» он сам зовёт " +
-                           "кого-то по имени, а обращение указывает на собеседника");
+                if (self) Add(entries[i].Speaker, name, strong);
+                else if (next is not null) Add(next, name, strong);
+            }
+        }
+        return votes;
+    }
+
+    /// <summary>Голоса за одну метку: вес по именам и те имена, за которыми есть явная передача слова.</summary>
+    private sealed class Vote
+    {
+        public Dictionary<string, int> Weight { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public HashSet<string> Confirmed { get; } = new(StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Упоминания имён в реплике: само имя, уверенный ли это голос и относится ли он
+    /// к говорящему (самопредставление) или к следующему (обращение, передача слова).
+    ///
+    /// Уверенным упоминание делает форма, а не место: имя отдельным предложением («Ира.»),
+    /// имя с запятой в начале предложения («Дальше, Дима.») или короткое предложение
+    /// с маркером передачи («Передаю слово давай Людмиле»). Всё прочее — упоминание
+    /// в третьем лице («Вижу Артёма контент»), и одного его мало, чтобы переименовать метку.
+    /// </summary>
+    private static IEnumerable<(string Name, bool Strong, bool Self)> Mentions(
+        string text, HashSet<string> names)
+    {
+        var words = Words(text);
+        if (words.Length == 0) yield break;
+
+        int position = 0;
+        foreach (var sentence in Regex.Split(text, @"(?<=[.!?…])\s+"))
+        {
+            var inSentence = Tokens(sentence);
+            if (inSentence.Length == 0) continue;
+
+            bool marker = inSentence.Any(t => HandoverMarkers.Contains(t.Word));
+            for (int i = 0; i < inSentence.Length; i++)
+            {
+                int atEntry = position + i;
+                bool atEdge = atEntry < HeadWords || words.Length - 1 - atEntry < TailWords;
+
+                foreach (var name in names)
+                {
+                    if (!Same(inSentence[i].Word, name)) continue;
+
+                    if (i > 0 && SelfIntro.Contains(inSentence[i - 1].Word))
+                    {
+                        yield return (name, true, true);
+                        continue;
+                    }
+                    if (!atEdge) continue;
+
+                    bool strong = inSentence.Length == 1
+                               || (i < 3 && inSentence[i].Comma)
+                               || (marker && inSentence.Length <= 12);
+                    yield return (name, strong, false);
+                }
+            }
+            position += inSentence.Length;
+        }
+    }
+
+    /// <summary>Слова, после которых имя называет самого говорящего: «я Марина», «меня зовут Марина».</summary>
+    private static readonly HashSet<string> SelfIntro = new(StringComparer.Ordinal)
+        { "я", "зовут", "это", "i", "am", "this", "is" };
+
+    /// <summary>Слова предложения вместе с признаком «после слова стоит запятая».</summary>
+    private static (string Word, bool Comma)[] Tokens(string sentence) =>
+        Regex.Matches(sentence.ToLowerInvariant().Replace('ё', 'е'), @"[\p{L}\p{Nd}]+\s*,?")
+            .Select(m => (Word: Regex.Replace(m.Value, @"[^\p{L}\p{Nd}]", ""),
+                          Comma: m.Value.TrimEnd().EndsWith(',')))
+            .Where(t => t.Word.Length > 0)
+            .ToArray();
+
+    /// <summary>Кто заговорит после реплики <paramref name="i"/>, или null, если она последняя.</summary>
+    private static string? NextSpeaker(IReadOnlyList<TranscriptEntry> entries, int i)
+    {
+        for (int j = i + 1; j < entries.Count; j++)
+            if (!string.Equals(entries[j].Speaker, entries[i].Speaker, StringComparison.Ordinal))
+                return entries[j].Speaker;
+        return null;
+    }
+
+    /// <summary>
+    /// Кому какое имя достаётся. Отказ вместо догадки: имя не назначается, если за ним нет
+    /// ни одной явной передачи слова, если у метки два равных кандидата или если на одно имя
+    /// одинаково претендуют две метки, — «Собеседник N» в задачах честнее чужого имени.
+    /// </summary>
+    private static Dictionary<string, string> Resolve(
+        Dictionary<string, Vote> votes, ICollection<string>? trace)
+    {
+        var claims = new List<(string Label, string Name, int Weight)>();
+        foreach (var (label, vote) in votes)
+        {
+            var ranked = vote.Weight.OrderByDescending(p => p.Value).ToList();
+            if (ranked.Count == 0) continue;
+            if (!vote.Confirmed.Contains(ranked[0].Key))
+            {
+                trace?.Add($"«{label}» оставлен как есть: имя «{ranked[0].Key}» только упоминалось " +
+                           "рядом, слово ему никто не передавал");
                 continue;
             }
+            if (ranked.Count > 1 && ranked[0].Value == ranked[1].Value)
+            {
+                trace?.Add($"«{label}» оставлен как есть: голоса поровну " +
+                           $"({ranked[0].Key} и {ranked[1].Key} по {ranked[0].Value})");
+                continue;
+            }
+            claims.Add((label, ranked[0].Key, ranked[0].Value));
+        }
 
-            result[label] = name;
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var group in claims.GroupBy(c => c.Name, StringComparer.OrdinalIgnoreCase))
+        {
+            var ranked = group.OrderByDescending(c => c.Weight).ToList();
+            if (ranked.Count > 1 && ranked[0].Weight == ranked[1].Weight)
+            {
+                trace?.Add($"имя «{group.Key}» не назначено: на него одинаково претендуют " +
+                           string.Join(" и ", ranked.Take(2).Select(c => $"«{c.Label}»")));
+                continue;
+            }
+            result[ranked[0].Label] = ranked[0].Name;
+            foreach (var loser in ranked.Skip(1))
+                trace?.Add($"«{loser.Label}» оставлен как есть: имя «{group.Key}» ушло " +
+                           $"к «{ranked[0].Label}» ({ranked[0].Weight} против {loser.Weight})");
         }
         return result;
     }
@@ -197,56 +355,28 @@ public static class SpeakerNamer
         return name.Length >= 2 && name != "?" && !name.Contains(' ') ? name : null;
     }
 
-    /// <summary>
-    /// Чью реплику цитирует модель, или null, если цитаты в транскрипте нет. Требование
-    /// сослаться на конкретное место — главная защита от гадания (без него разметка менялась
-    /// от прогона к прогону), а знание автора цитаты ловит перепутанное направление обращения.
-    /// Сверяем по первым словам: дословно модель цитирует не всегда.
-    /// </summary>
-    private static string? QuoteSource(Dictionary<string, string> byLabel, string quote)
-    {
-        var normalized = Normalize(quote);
-        if (normalized.Length < 8) return null; // «да» и «угу» ничего не подтверждают
-
-        var words = normalized.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        for (int take = words.Length; take >= 3; take--)
-        {
-            var prefix = string.Join(' ', words.Take(take));
-            if (prefix.Length < 8) break;
-            foreach (var (label, text) in byLabel)
-                if (text.Contains(prefix, StringComparison.Ordinal)) return label;
-        }
-        return null;
-    }
+    /// <summary>Слова реплики в сравнимом виде: нижний регистр, без знаков препинания.</summary>
+    private static string[] Words(string text) =>
+        Regex.Split(text.ToLowerInvariant().Replace('ё', 'е'), @"[^\p{L}\p{Nd}]+")
+            .Where(w => w.Length > 0).ToArray();
 
     /// <summary>
-    /// Цитата начинается с этого имени — то есть это обращение («Антон, сорри, поправлю»),
-    /// и названный человек как раз НЕ тот, кто говорит. Самопредставление («всем привет,
-    /// я Марина») под правило не попадает, поэтому такие цитаты остаются в силе.
+    /// Одно и то же имя с точностью до падежа: «Людмиле» — это «Людмила». Сверяем по основе,
+    /// но короткие имена («Ира», «Дима») — целиком: основа из двух букв цепляет пол-словаря.
     /// </summary>
-    private static bool StartsWithName(string quote, string name)
+    private static bool Same(string word, string name)
     {
-        var words = Normalize(quote).Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (words.Length == 0) return false;
-        var stem = Normalize(name);
-        if (stem.Length > 3) stem = stem[..^1]; // «Артёма» и «Артём» — одно обращение
-        return words[0].StartsWith(stem, StringComparison.Ordinal);
+        var w = Normalize(word);
+        var n = Normalize(name);
+        if (w.Length == 0 || n.Length == 0) return false;
+        if (w == n) return true;
+        if (n.Length < 4) return false;
+        var stem = n[..^1];
+        return w.Length >= stem.Length && w.StartsWith(stem, StringComparison.Ordinal);
     }
 
-    /// <summary>Текст в сравнимом виде: нижний регистр, только буквы и цифры через пробел.</summary>
     private static string Normalize(string text) =>
-        Regex.Replace(text.ToLowerInvariant().Replace('ё', 'е'), @"[^\p{L}\p{Nd}]+", " ").Trim();
-
-    /// <summary>
-    /// Имя могло звучать только в косвенном падеже («Передаю слово Артёму»), поэтому
-    /// сверяем ещё и по основе — совпадения первых букв достаточно, имена короткие.
-    /// </summary>
-    private static bool SpokenInflected(HashSet<string> spoken, string name)
-    {
-        if (name.Length < 4) return false;
-        var stem = name[..^1].ToLowerInvariant();
-        return spoken.Any(w => w.Length >= stem.Length && w.StartsWith(stem, StringComparison.Ordinal));
-    }
+        Regex.Replace(text.ToLowerInvariant().Replace('ё', 'е'), @"[^\p{L}\p{Nd}]+", "");
 
     /// <summary>
     /// Сообщение для модели: реплики с метками, сколько влезает в окно. Имена чаще всего
