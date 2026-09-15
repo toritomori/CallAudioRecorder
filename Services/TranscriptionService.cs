@@ -27,7 +27,11 @@ public sealed class TranscriptionService : IDisposable
     /// <summary>Реплики одного спикера с паузой меньше этой склеиваются в один блок (настраивается в UI).</summary>
     public static TimeSpan BubbleMergeGap { get; set; } = TimeSpan.FromSeconds(3.5);
 
-    private sealed record SegmentJob(string Speaker, TimeSpan Start, float[] Samples);
+    /// <param name="Samples">Сегмент с паддингом — для распознавания, чтобы не терять краевые слоги.</param>
+    /// <param name="Core">Тот же сегмент без паддинга — для диаризации: 0.3 с по краям при быстрой
+    /// смене реплик — это чужой голос, и с ним живое решение заводило 18 профилей вместо 15
+    /// (--diar-file на записи от 15.09).</param>
+    private sealed record SegmentJob(string Speaker, TimeSpan Start, float[] Samples, float[] Core);
 
     /// <summary>
     /// Кольцевой буфер последних N секунд канала. Нужен, чтобы вырезать сегмент
@@ -323,7 +327,7 @@ public sealed class TranscriptionService : IDisposable
 
             if (!_queue.IsAddingCompleted)
                 _queue.Add(new SegmentJob(speaker,
-                    TimeSpan.FromSeconds(actualStart / (double)Rate), samples));
+                    TimeSpan.FromSeconds(actualStart / (double)Rate), samples, seg.Samples));
         }
     }
 
@@ -348,7 +352,7 @@ public sealed class TranscriptionService : IDisposable
                 if (_diarizer is not null && speaker == _language.OtherLabel)
                 {
                     // Ошибка диаризации не должна ронять транскрипцию — выключаем её и едем дальше.
-                    try { speaker = _diarizer.Identify(job.Samples); }
+                    try { speaker = _diarizer.Identify(job.Core); }
                     catch { _diarizer.Dispose(); _diarizer = null; }
                 }
 

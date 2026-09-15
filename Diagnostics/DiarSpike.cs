@@ -57,15 +57,25 @@ public static class DiarSpike
     /// затем профили пересобираются. Печатает, сколько «собеседников» получилось до и после —
     /// на живых записях именно здесь видно, сколько из них были фантомами.
     /// </summary>
-    public static void RunFile(string logPath, string audioPath, float? merge = null, float? weak = null)
+    /// <param name="padSeconds">
+    /// На сколько расширять сегмент в обе стороны перед диаризацией. По умолчанию 0 — как
+    /// в приложении: паддинг нужен распознавателю, а диаризатору идёт ядро VAD-сегмента.
+    /// </param>
+    public static void RunFile(string logPath, string audioPath, float? merge = null, float? weak = null,
+        float? padSeconds = null, float? newSpeaker = null, float? newSeconds = null)
     {
         var log = new StringBuilder();
         try
         {
             if (merge is not null) SpeakerDiarizer.MergeThreshold = merge.Value;
             if (weak is not null) SpeakerDiarizer.WeakMergeThreshold = weak.Value;
+            if (newSpeaker is not null) SpeakerDiarizer.NewSpeakerThreshold = newSpeaker.Value;
+            if (newSeconds is not null) SpeakerDiarizer.MinNewSpeakerSeconds = newSeconds.Value;
+            double padding = padSeconds ?? 0;
             log.AppendLine($"пороги слияния: обычный {SpeakerDiarizer.MergeThreshold:F2}, " +
-                           $"для осколков {SpeakerDiarizer.WeakMergeThreshold:F2}");
+                           $"для осколков {SpeakerDiarizer.WeakMergeThreshold:F2}; паддинг {padding:F2} с");
+            log.AppendLine($"новый спикер: близость ниже {SpeakerDiarizer.NewSpeakerThreshold:F2}, " +
+                           $"сегмент от {SpeakerDiarizer.MinNewSpeakerSeconds:F1} с");
             // MP3 читается через Media Foundation, а её надо поднять руками:
             // в WAV-режимах (--stt-test) декодер не нужен, поэтому раньше не всплывало.
             NAudio.MediaFoundation.MediaFoundationApi.Startup();
@@ -85,21 +95,34 @@ public static class DiarSpike
             vadConfig.SampleRate = 16000;
             using var vad = new VoiceActivityDetector(vadConfig, 60);
 
+            // Отдельный extractor для половин сегмента: диаризатор свой держит внутри.
+            using var halves = new SpeakerEmbeddingExtractor(new SpeakerEmbeddingExtractorConfig
+            {
+                Model = TranscriptionService.SpeakerModelPath,
+                NumThreads = 1,
+                Provider = "cpu"
+            });
+            int pad = (int)(padding * 16000);
+
             var assigned = new List<string>();
+            var decisions = new List<Decision>();
             const int window = 512;
             for (int offset = 0; offset < samples.Length; offset += window)
             {
                 int count = Math.Min(window, samples.Length - offset);
                 vad.AcceptWaveform(samples.AsSpan(offset, count).ToArray());
-                Drain(vad, diarizer, assigned);
+                Drain(vad, diarizer, assigned, decisions, samples, pad, halves);
             }
             vad.Flush();
-            Drain(vad, diarizer, assigned);
+            Drain(vad, diarizer, assigned, decisions, samples, pad, halves);
 
             var before = Counts(assigned);
             log.AppendLine();
             log.AppendLine($"--- ДО КОНСОЛИДАЦИИ: сегментов {assigned.Count}, спикеров {before.Count} ---");
             log.AppendLine(Describe(before));
+
+            DescribeDecisions(log, decisions);
+            DescribeMixedSegments(log, decisions);
 
             log.AppendLine();
             log.AppendLine("--- БЛИЗОСТЬ ЦЕНТРОИДОВ (топ-25) ---");
@@ -134,13 +157,109 @@ public static class DiarSpike
         System.IO.File.WriteAllText(logPath, log.ToString(), Encoding.UTF8);
     }
 
-    private static void Drain(VoiceActivityDetector vad, SpeakerDiarizer diarizer, List<string> assigned)
+    /// <summary>
+    /// Живое решение по сегменту: с какой близостью к лучшему профилю он пришёл и завёл ли
+    /// нового спикера. <paramref name="HalfSimilarity"/> — близость первой и второй половины
+    /// сегмента (null для коротких): низкая значит, что внутри сменился голос.
+    /// </summary>
+    private sealed record Decision(double Start, double Seconds, string Speaker, float Score,
+        bool Created, float? HalfSimilarity);
+
+    /// <summary>С какой длины сегмент делится пополам для проверки на смену голоса внутри.</summary>
+    private const double MinSplitSeconds = 4.0;
+
+    private static void Drain(VoiceActivityDetector vad, SpeakerDiarizer diarizer, List<string> assigned,
+        List<Decision> decisions, float[] audio, int pad, SpeakerEmbeddingExtractor halves)
     {
         while (!vad.IsEmpty())
         {
             var seg = vad.Front();
             vad.Pop();
-            assigned.Add(diarizer.Identify(seg.Samples));
+
+            // Паддинг — только для сравнения с прежним поведением, когда диаризатор получал
+            // сегмент, расширенный для распознавания.
+            int start = (int)Math.Max(0, seg.Start - pad);
+            int end = (int)Math.Min(audio.Length, seg.Start + seg.Samples.Length + pad);
+            var samples = audio[start..end];
+
+            int profilesBefore = diarizer.SpeakerCount;
+            var name = diarizer.Identify(samples);
+            assigned.Add(name);
+
+            float? half = null;
+            if (samples.Length >= MinSplitSeconds * 16000)
+            {
+                var a = Embed(halves, samples[..(samples.Length / 2)]);
+                var b = Embed(halves, samples[(samples.Length / 2)..]);
+                if (a is not null && b is not null) half = Dot(a, b);
+            }
+
+            decisions.Add(new Decision(start / 16000.0, samples.Length / 16000.0, name,
+                profilesBefore == 0 ? 0 : diarizer.LastBestScore,
+                diarizer.SpeakerCount > profilesBefore, half));
+        }
+    }
+
+    private static float[]? Embed(SpeakerEmbeddingExtractor extractor, float[] samples)
+    {
+        using var stream = extractor.CreateStream();
+        stream.AcceptWaveform(16000, samples);
+        stream.InputFinished();
+        if (!extractor.IsReady(stream)) return null;
+        var v = extractor.Compute(stream);
+        double norm = 0;
+        foreach (var x in v) norm += x * x;
+        float inv = norm > 0 ? (float)(1 / Math.Sqrt(norm)) : 0;
+        for (int i = 0; i < v.Length; i++) v[i] *= inv;
+        return v;
+    }
+
+    private static float Dot(float[] a, float[] b)
+    {
+        double dot = 0;
+        for (int i = 0; i < a.Length; i++) dot += a[i] * b[i];
+        return (float)dot;
+    }
+
+    /// <summary>
+    /// Где живое решение заводит фантомов: каждое создание профиля с близостью к лучшему
+    /// из уже известных, и распределение близости у сегментов, которые прилипли к профилю.
+    /// </summary>
+    private static void DescribeDecisions(StringBuilder log, List<Decision> decisions)
+    {
+        log.AppendLine();
+        log.AppendLine("--- СОЗДАНИЕ ПРОФИЛЕЙ (время, длина, близость к лучшему известному, близость половин) ---");
+        foreach (var d in decisions.Where(d => d.Created))
+            log.AppendLine($"{TimeSpan.FromSeconds(d.Start):hh\\:mm\\:ss}  {d.Seconds,5:F1}s  " +
+                           $"{d.Score:F3}  половины {(d.HalfSimilarity is { } h ? h.ToString("F3") : "—")}  → {d.Speaker}");
+
+        log.AppendLine();
+        log.AppendLine("--- БЛИЗОСТЬ К ЛУЧШЕМУ ПРОФИЛЮ (сегменты ≥2 с, прилипшие / создавшие) ---");
+        var enrolled = decisions.Where(d => d.Seconds >= 2 && d.Score > 0).ToList();
+        for (float lo = 0.20f; lo < 1.0f; lo += 0.05f)
+        {
+            float hi = lo + 0.05f;
+            int joined = enrolled.Count(d => !d.Created && d.Score >= lo && d.Score < hi);
+            int created = enrolled.Count(d => d.Created && d.Score >= lo && d.Score < hi);
+            if (joined + created > 0) log.AppendLine($"{lo:F2}–{hi:F2}: {joined,4} / {created}");
+        }
+        log.AppendLine($"сегментов короче 2 с: {decisions.Count(d => d.Seconds < 2)} из {decisions.Count}");
+    }
+
+    /// <summary>
+    /// Сегменты, внутри которых сменился голос: системный канал — это микс всех собеседников,
+    /// и при быстрой смене реплик без паузы в 0.5 с VAD отдаёт двоих одним куском.
+    /// </summary>
+    private static void DescribeMixedSegments(StringBuilder log, List<Decision> decisions)
+    {
+        var split = decisions.Where(d => d.HalfSimilarity is not null).ToList();
+        log.AppendLine();
+        log.AppendLine($"--- БЛИЗОСТЬ ПОЛОВИН СЕГМЕНТА (сегменты ≥{MinSplitSeconds:F0} с: всего / из них создали профиль) ---");
+        for (float lo = -0.10f; lo < 1.0f; lo += 0.1f)
+        {
+            float hi = lo + 0.1f;
+            var bin = split.Where(d => d.HalfSimilarity >= lo && d.HalfSimilarity < hi).ToList();
+            if (bin.Count > 0) log.AppendLine($"{lo:F1}–{hi:F1}: {bin.Count,4} / {bin.Count(d => d.Created)}");
         }
     }
 
