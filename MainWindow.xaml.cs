@@ -317,6 +317,10 @@ public partial class MainWindow : Window
 
                 if (_finalTranscript.Count > 0)
                 {
+                    // Живая лента несёт метки, выданные по ходу записи, а после неё диаризация
+                    // пересобрала профили: без замены окно показывало десяток «собеседников»,
+                    // когда в файле их трое.
+                    ShowBlocks(_finalTranscript);
                     SaveTranscript(path, _finalTranscript);
                     MakeSummaryBtn.IsEnabled = true;
                     FixTextBtn.IsEnabled = true;
@@ -480,10 +484,18 @@ public partial class MainWindow : Window
     /// </summary>
     private void AddTranscriptEntry(TranscriptEntry entry)
     {
+        // Запись уже остановлена: реплика есть в итоговом транскрипте, а её живая метка
+        // вернула бы в ленту фантома, которого консолидация уже слила.
+        if (_stt is null) return;
+
         // Реплика встаёт на своё место по времени, а лента пересобирается: без этого ответ
         // собеседника оказывался выше вопроса, потому что распознаются каналы не по порядку.
-        var blocks = TranscriptionService.AppendRecognized(_recognized, entry);
+        ShowBlocks(TranscriptionService.AppendRecognized(_recognized, entry));
+    }
 
+    /// <summary>Приводит ленту к <paramref name="blocks"/>, не трогая совпавшие пузыри.</summary>
+    private void ShowBlocks(IReadOnlyList<TranscriptEntry> blocks)
+    {
         // Обновляем только разошедшиеся блоки — перезаполнение всей коллекции сбрасывало бы
         // прокрутку и моргало на каждой реплике.
         for (int i = 0; i < blocks.Count; i++)

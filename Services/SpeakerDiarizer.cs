@@ -23,10 +23,29 @@ public sealed class SpeakerDiarizer : IDisposable
     private const float SimilarityThreshold = 0.6f;
 
     /// <summary>
-    /// Короче этого embedding шумный: такой сегмент не создаёт нового спикера
-    /// и не обновляет центроид — только прилипает к ближайшему профилю.
+    /// Короче этого embedding шумный: такой сегмент не обновляет центроид
+    /// и в консолидации надёжным не считается — только прилипает к ближайшему профилю.
     /// </summary>
     private const double MinEnrollSeconds = 2.0;
+
+    /// <summary>
+    /// Ниже этой близости к лучшему профилю голос считается новым. Между ней и
+    /// <see cref="SimilarityThreshold"/> — серая зона: сегмент прилипает к ближайшему профилю,
+    /// но центроид не уточняет и надёжным не считается.
+    /// Замерено --diar-file на записи от 15.09 (четыре участника): настоящие новые голоса пришли
+    /// с близостью 0.24–0.37, а фантомы живого решения — с 0.45–0.57, у самого порога 0.6
+    /// (единственный на 0.446 отсекает <see cref="MinNewSpeakerSeconds"/>: его кусок — 2.4 с).
+    /// Выше 0.5 фантомы вернутся; ниже 0.40 опасно — центроиды разных спикеров лежат на 0.40–0.46,
+    /// и новый голос, похожий на знакомый, прилипнет к нему насовсем.
+    /// </summary>
+    public static float NewSpeakerThreshold { get; set; } = 0.45f;
+
+    /// <summary>
+    /// Со скольких секунд сегмент может завести нового спикера — строже, чем уточнить знакомого.
+    /// На записи от 15.09 семь фантомов из одиннадцати завели куски по 2.1–2.7 с, а настоящие
+    /// голоса впервые звучали кусками по 3.9–11.6 с.
+    /// </summary>
+    public static double MinNewSpeakerSeconds { get; set; } = 3.0;
 
     /// <summary>
     /// Насколько должны быть близки центроиды двух профилей, чтобы слить их после записи.
@@ -73,7 +92,7 @@ public sealed class SpeakerDiarizer : IDisposable
     /// <summary>Разобранный сегмент: чей embedding, к какому профилю его отнесли и надёжен ли он.</summary>
     private sealed record Segment(float[] Embedding, int Profile, bool Reliable);
 
-    private readonly SpeakerEmbeddingExtractor _extractor;
+    private readonly SpeakerEmbeddingExtractor? _extractor;
     private readonly List<Profile> _profiles = new();
     private readonly List<Segment> _segments = new();
     private readonly LanguageProfile _language;
@@ -85,11 +104,8 @@ public sealed class SpeakerDiarizer : IDisposable
     public int SpeakerCount => _profiles.Count;
 
     /// <param name="language">Определяет метки спикеров: «Собеседник N» или «Speaker N».</param>
-    public SpeakerDiarizer(string modelPath, LanguageProfile? language = null)
+    public SpeakerDiarizer(string modelPath, LanguageProfile? language = null) : this(language)
     {
-        _language = language ?? Languages.Russian;
-        _lastSpeaker = _language.NumberedOther(1);
-
         var config = new SpeakerEmbeddingExtractorConfig
         {
             Model = modelPath,
@@ -99,12 +115,24 @@ public sealed class SpeakerDiarizer : IDisposable
         _extractor = new SpeakerEmbeddingExtractor(config);
     }
 
+    /// <summary>Без модели: embedding'и подаются готовыми через <see cref="Assign"/> (для тестов).</summary>
+    internal SpeakerDiarizer(LanguageProfile? language)
+    {
+        _language = language ?? Languages.Russian;
+        _lastSpeaker = _language.NumberedOther(1);
+    }
+
     /// <summary>Возвращает имя спикера для речевого сегмента 16 kHz mono.</summary>
     public string Identify(float[] samples16k)
     {
         var emb = ComputeEmbedding(samples16k);
         if (emb is null) return _lastSpeaker; // сегмент слишком короткий даже для embedding'а
+        return Assign(emb, samples16k.Length / (double)Rate);
+    }
 
+    /// <summary>Решение по готовому embedding'у сегмента длиной <paramref name="seconds"/>.</summary>
+    internal string Assign(float[] emb, double seconds)
+    {
         Normalize(emb);
 
         Profile? best = null;
@@ -116,7 +144,7 @@ public sealed class SpeakerDiarizer : IDisposable
         }
         LastBestScore = best is null ? 0 : bestScore;
 
-        bool canEnroll = samples16k.Length >= MinEnrollSeconds * Rate;
+        bool canEnroll = seconds >= MinEnrollSeconds;
 
         if (best is not null && bestScore >= SimilarityThreshold)
         {
@@ -125,9 +153,10 @@ public sealed class SpeakerDiarizer : IDisposable
             return _lastSpeaker = best.Name;
         }
 
-        // Незнакомый голос: длинный сегмент (или пустой реестр) заводит нового спикера,
-        // короткий — прилипает к ближайшему, чтобы шумный embedding не плодил фантомов.
-        if (best is null || canEnroll)
+        // Нового спикера заводит только уверенно чужой и достаточно длинный сегмент (или пустой
+        // реестр). Короткий или попавший в серую зону прилипает к ближайшему, не трогая центроид:
+        // именно такие куски — шумные, смешанные с чужой репликой — и плодили фантомов.
+        if (best is null || (bestScore < NewSpeakerThreshold && seconds >= MinNewSpeakerSeconds))
         {
             var profile = new Profile(_language.NumberedOther(_profiles.Count + 1), emb);
             _profiles.Add(profile);
@@ -135,7 +164,7 @@ public sealed class SpeakerDiarizer : IDisposable
             return _lastSpeaker = profile.Name;
         }
 
-        Remember(emb, _profiles.IndexOf(best), canEnroll);
+        Remember(emb, _profiles.IndexOf(best), reliable: false);
         return _lastSpeaker = best.Name;
     }
 
@@ -161,6 +190,11 @@ public sealed class SpeakerDiarizer : IDisposable
         var clusters = new List<List<int>>();
         for (int i = 0; i < _profiles.Count; i++) clusters.Add([i]);
 
+        // Настоящий спикер — профиль, который сам набрал MinReliableSegments надёжных сегментов,
+        // а не в сумме со слипшимися осколками.
+        var strong = new bool[_profiles.Count];
+        for (int i = 0; i < strong.Length; i++) strong[i] = Weight([i]) >= MinReliableSegments;
+
         while (clusters.Count > 1)
         {
             // Ищем лучшую пару среди ДОПУСТИМЫХ: порог у каждой свой, поэтому обрывать перебор
@@ -174,11 +208,15 @@ public sealed class SpeakerDiarizer : IDisposable
                     float score = Cosine(Centroid(clusters[i]), Centroid(clusters[j]));
                     if (score <= bestScore) continue;
 
-                    // Профиль на одной-двух репликах — это чаще всего чужой сегмент, отколовшийся
-                    // от настоящего спикера, поэтому его прижимаем к соседу мягче обычного.
-                    bool weak = Weight(clusters[i]) < MinReliableSegments
-                             || Weight(clusters[j]) < MinReliableSegments;
-                    if (score < (weak ? WeakMergeThreshold : MergeThreshold)) continue;
+                    // Профиль на одной-двух репликах — это чаще всего сегмент, отколовшийся
+                    // от настоящего спикера, поэтому его прижимаем к соседу мягче обычного. Но только
+                    // к настоящему: осколки похожи друг на друга сильнее, чем на кого-либо (0.60–0.64
+                    // на записи от 15.09 — это смешанные и шумные куски), и, слипаясь, набирали вес
+                    // настоящего спикера — выходил отдельный фантом на 30 реплик.
+                    bool strongI = clusters[i].Exists(p => strong[p]);
+                    bool strongJ = clusters[j].Exists(p => strong[p]);
+                    if (!strongI && !strongJ) continue;
+                    if (score < (strongI && strongJ ? MergeThreshold : WeakMergeThreshold)) continue;
 
                     bestScore = score;
                     a = i;
@@ -262,10 +300,11 @@ public sealed class SpeakerDiarizer : IDisposable
     /// <summary>Embedding сегмента, или null если сегмент короче окна модели.</summary>
     private float[]? ComputeEmbedding(float[] samples)
     {
-        using var stream = _extractor.CreateStream();
+        var extractor = _extractor ?? throw new InvalidOperationException("Диаризатор создан без модели.");
+        using var stream = extractor.CreateStream();
         stream.AcceptWaveform(Rate, samples);
         stream.InputFinished();
-        return _extractor.IsReady(stream) ? _extractor.Compute(stream) : null;
+        return extractor.IsReady(stream) ? extractor.Compute(stream) : null;
     }
 
     private static void Normalize(float[] v)
@@ -277,5 +316,5 @@ public sealed class SpeakerDiarizer : IDisposable
         for (int i = 0; i < v.Length; i++) v[i] *= inv;
     }
 
-    public void Dispose() => _extractor.Dispose();
+    public void Dispose() => _extractor?.Dispose();
 }

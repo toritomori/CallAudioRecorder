@@ -61,8 +61,10 @@ internal static class DiagnosticModes
         // --diar-test <лог> <wav1> <wav2> — два голоса → «Собеседник 1»/«Собеседник 2»
         ["--diar-test"] = new(4, a => DiarSpike.Run(a[1], a[2], a[3])),
 
-        // --diar-file <лог> <mp3 или wav> [порог] [порог-для-осколков] — консолидация профилей на записи
-        ["--diar-file"] = new(3, a => DiarSpike.RunFile(a[1], a[2], FloatArg(a, 3), FloatArg(a, 4))),
+        // --diar-file <лог> <mp3 или wav> [порог] [порог-для-осколков] [паддинг-сек] [порог-нового] [сек-нового]
+        // — живое решение и консолидация профилей на записи
+        ["--diar-file"] = new(3, a => DiarSpike.RunFile(a[1], a[2], FloatArg(a, 3), FloatArg(a, 4), FloatArg(a, 5),
+            FloatArg(a, 6), FloatArg(a, 7))),
 #endif
     };
 
