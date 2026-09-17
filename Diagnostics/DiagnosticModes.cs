@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Threading.Tasks;
@@ -51,8 +51,11 @@ internal static class DiagnosticModes
         // --canon-test <лог> <файл .транскрипт.md или папка> — канонизация терминов и версий на корпусе
         ["--canon-test"] = new(3, a => TextChecks.Canon(a[1], a[2])),
 
-        // --ui-shot <png> <лог> — снимок окна и проверка вёрстки на наложения
-        ["--ui-shot"] = new(3, a => UiShot.Run(a[1], a[2])),
+        // --ui-shot <png> <лог> [ширина] [высота] [sample] — снимок окна и проверка вёрстки на наложения;
+        // размер задают, чтобы проверить тянущееся окно на краях диапазона,
+        // sample — заполнить окно образцом реплик и полосой длинной задачи
+        ["--ui-shot"] = new(3, a => UiShot.Run(a[1], a[2], SizeArg(a, 3), SizeArg(a, 4),
+            a.Length > 5 && a[5].StartsWith("s", StringComparison.OrdinalIgnoreCase))),
 
 #if DEBUG
         // --stt-test <лог> <wav> [ru|en] — RTF распознавания
@@ -83,6 +86,12 @@ internal static class DiagnosticModes
 
     private static int IntArg(string[] args, int index, int fallback) =>
         args.Length > index && int.TryParse(args[index], out var value) ? value : fallback;
+
+    /// <summary>Размер окна для <c>--ui-shot</c>; 0 — оставить тот, что задан в XAML.</summary>
+    private static double SizeArg(string[] args, int index) =>
+        args.Length > index && double.TryParse(args[index], NumberStyles.Float, CultureInfo.InvariantCulture, out var value)
+            ? value
+            : 0;
 
     private static float? FloatArg(string[] args, int index) =>
         args.Length > index && float.TryParse(args[index], NumberStyles.Float, CultureInfo.InvariantCulture, out var value)
