@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
@@ -10,6 +10,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media.Animation;
 using System.Windows.Threading;
@@ -26,6 +27,15 @@ namespace CallAudioRecorder;
 public partial class MainWindow : Window
 {
     private const string DefaultOllamaModel = "qwen3.5:9b";
+
+    /// <summary>
+    /// Границы высоты поля глоссария. Минимум — ровно три строки по 16 px плюс рамка:
+    /// при 46 px третья строка резалась пополам и поле читалось как сломанное.
+    /// </summary>
+    private const double GlossaryMinHeight = 50, GlossaryMaxHeight = 320;
+
+    /// <summary>Сколько высоты остаётся ленте реплик, сколько бы ни тянули глоссарий.</summary>
+    private const double MinFeedHeight = 160;
 
     private readonly MMDeviceEnumerator _enumerator = new();
     private readonly DispatcherTimer _uiTimer;
@@ -52,10 +62,10 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
 
-        // Окно фиксированного размера, но при крупном системном масштабе 920 px могут не влезть
-        // в рабочую область. Тогда высоту подрезаем, а карточки настроек уходят в прокрутку —
-        // блок записи (таймер и кнопка) остаётся целым при любой высоте.
-        MaxHeight = SystemParameters.WorkArea.Height;
+        // Окно тянется, но стартовая высота при крупном системном масштабе может не влезть
+        // в рабочую область. Подрезаем только старт: MaxHeight здесь мешал бы растянуть окно
+        // на второй монитор. Карточки настроек уходят в прокрутку, а блок записи
+        // (таймер и кнопка) остаётся целым при любой высоте.
         Height = Math.Min(Height, SystemParameters.WorkArea.Height);
 
         OutputFolder.Text = Environment.GetFolderPath(Environment.SpecialFolder.MyMusic);
@@ -77,6 +87,14 @@ public partial class MainWindow : Window
             _enumerator.Dispose();
             _ollama.Dispose();
         };
+    }
+
+    protected override void OnSourceInitialized(EventArgs e)
+    {
+        base.OnSourceInitialized(e);
+        // Окно без системного обрамления: края приходится отдавать вручную, иначе
+        // ResizeMode="CanResize" не даёт ни курсора над краем, ни самого захвата.
+        WindowResizeBorder.Attach(this);
     }
 
     protected override void OnClosing(CancelEventArgs e)
@@ -144,10 +162,10 @@ public partial class MainWindow : Window
 
         // Модель другого языка качается при первой записи — предупреждаем заранее, объём заметный.
         if (!ModelDownloader.ModelsPresent(profile))
-            Status.Text = $"Язык: {profile.DisplayName}. Модель (~{ModelDownloader.MissingMegabytes(profile)} МБ) " +
-                          "будет загружена при старте записи.";
+            SetStatus($"Язык: {profile.DisplayName}. Модель (~{ModelDownloader.MissingMegabytes(profile)} МБ) " +
+                      "будет загружена при старте записи.");
         else
-            Status.Text = $"Язык распознавания: {profile.DisplayName}";
+            SetStatus($"Язык распознавания: {profile.DisplayName}");
     }
 
     /// <summary>Жив ли процесс: PID из списка мог протухнуть, пока пользователь выбирал.</summary>
@@ -172,22 +190,33 @@ public partial class MainWindow : Window
         RenderDevices.IsEnabled = wholeDevice && _engine is null;
     }
 
+    /// <summary>
+    /// Заполняет оба списка моделей — правки транскрипта и итогов. Список один и тот же,
+    /// а выбор независимый: коррекции хватает лёгкой text-модели, итогам нужна та,
+    /// что лучше рассуждает.
+    /// </summary>
     private async Task LoadOllamaModelsAsync()
     {
         try
         {
             var models = await _ollama.ListModelsAsync();
-            OllamaModels.Items.Clear();
-            foreach (var m in models) OllamaModels.Items.Add(m);
-            OllamaModels.SelectedItem = models.FirstOrDefault(m => m.StartsWith(DefaultOllamaModel, StringComparison.Ordinal))
-                                        ?? models.FirstOrDefault();
+            FillModels(TranscriptModels, models);
+            FillModels(OllamaModels, models);
         }
         catch (OllamaUnavailableException)
         {
-            OllamaModels.Items.Clear();
-            OllamaModels.Items.Add(DefaultOllamaModel);
-            OllamaModels.SelectedIndex = 0;
+            // Ollama может подняться и позже — оставляем модель по умолчанию, чтобы было что выбрать.
+            FillModels(TranscriptModels, new[] { DefaultOllamaModel });
+            FillModels(OllamaModels, new[] { DefaultOllamaModel });
         }
+    }
+
+    private static void FillModels(ComboBox box, string[] models)
+    {
+        box.Items.Clear();
+        foreach (var m in models) box.Items.Add(m);
+        box.SelectedItem = models.FirstOrDefault(m => m.StartsWith(DefaultOllamaModel, StringComparison.Ordinal))
+                           ?? (models.Length > 0 ? models[0] : null);
     }
 
     private async void StartStop_Click(object sender, RoutedEventArgs e)
@@ -202,19 +231,20 @@ public partial class MainWindow : Window
         var sourceWindow = (SystemSource.SelectedItem as SystemSourceItem)?.Window;
         if (CaptureDevices.SelectedItem is not DeviceItem capture)
         {
-            Status.Text = "Выберите микрофон.";
+            SetStatus("Выберите микрофон.", StatusKind.Error);
             return;
         }
         if (sourceWindow is null && RenderDevices.SelectedItem is not DeviceItem)
         {
-            Status.Text = "Выберите устройство вывода или приложение-источник.";
+            SetStatus("Выберите устройство вывода или приложение-источник.", StatusKind.Error);
             return;
         }
 
         // Окно могло закрыться, пока список висел на экране, — PID стал бы чужим.
         if (sourceWindow is not null && !ProcessAlive(sourceWindow.ProcessId))
         {
-            Status.Text = $"Приложение «{sourceWindow.ProcessName}» уже закрыто. Обновите список источников.";
+            SetStatus($"Приложение «{sourceWindow.ProcessName}» уже закрыто. Обновите список источников.",
+                StatusKind.Error);
             LoadSystemSources();
             return;
         }
@@ -222,7 +252,7 @@ public partial class MainWindow : Window
         var folder = OutputFolder.Text.Trim();
         if (!Directory.Exists(folder))
         {
-            Status.Text = $"Папка не найдена: {folder}";
+            SetStatus($"Папка не найдена: {folder}", StatusKind.Error);
             return;
         }
 
@@ -232,15 +262,20 @@ public partial class MainWindow : Window
         {
             if (transcribe && !ModelDownloader.ModelsPresent(_language))
             {
-                var progress = new Progress<string>(s => Status.Text = s);
+                var progress = new Progress<string>(s => SetStatus(s, StatusKind.Progress));
+                BeginTask(determinate: false);
                 try
                 {
                     await ModelDownloader.EnsureAsync(progress, _language);
                 }
                 catch (Exception ex)
                 {
-                    Status.Text = $"Модели не загрузились: {ex.Message} Запись без транскрипта.";
+                    SetStatus($"Модели не загрузились: {ex.Message} Запись без транскрипта.", StatusKind.Error);
                     transcribe = false;
+                }
+                finally
+                {
+                    EndTask();
                 }
             }
 
@@ -259,7 +294,7 @@ public partial class MainWindow : Window
 
                 if (transcribe)
                 {
-                    Status.Text = "Загружаю модель распознавания…";
+                    SetStatus("Загружаю модель распознавания…", StatusKind.Progress);
                     var engine = _engine;
                     var hotwords = TranscriptCorrector.ToHotwords(GlossaryBox.Text, _language);
                     // Глоссарий работает с двух сторон: hotwords смещают распознавание к нужным
@@ -280,7 +315,7 @@ public partial class MainWindow : Window
                 _stt = null;
                 _engine?.Dispose();
                 _engine = null;
-                Status.Text = $"Не удалось начать запись: {ex.Message}";
+                SetStatus($"Не удалось начать запись: {ex.Message}", StatusKind.Error);
                 return;
             }
 
@@ -288,11 +323,13 @@ public partial class MainWindow : Window
             _recognized.Clear();
             _finalTranscript = null;
             MakeSummaryBtn.IsEnabled = false;
+            SetTranscriptButtons(false);
             TranscriptEmpty.Visibility = Visibility.Visible;
 
             _uiTimer.Start();
             SetRecordingUi(true);
-            Status.Text = $"Идёт запись: {Path.GetFileName(path)}" + (transcribe ? " · транскрипция включена" : "");
+            SetStatus($"Идёт запись: {Path.GetFileName(path)}" + (transcribe ? " · транскрипция включена" : ""),
+                StatusKind.Progress);
         }
         finally
         {
@@ -310,7 +347,7 @@ public partial class MainWindow : Window
 
             if (_stt is { } stt)
             {
-                Status.Text = "Распознаю остаток речи…";
+                SetStatus("Распознаю остаток речи…", StatusKind.Progress);
                 _finalTranscript = await Task.Run(stt.StopAndDrain);
                 stt.Dispose();
                 _stt = null;
@@ -323,14 +360,14 @@ public partial class MainWindow : Window
                     ShowBlocks(_finalTranscript);
                     SaveTranscript(path, _finalTranscript);
                     MakeSummaryBtn.IsEnabled = true;
-                    FixTextBtn.IsEnabled = true;
+                    SetTranscriptButtons(true);
                 }
             }
 
             var size = new FileInfo(path).Length / 1024.0 / 1024.0;
             var extra = _finalTranscript is { Count: > 0 }
                 ? $" · реплик: {_finalTranscript.Count}" : "";
-            Status.Text = $"Сохранено: {Path.GetFileName(path)} ({size:F1} МБ){extra}";
+            SetStatus($"Сохранено: {Path.GetFileName(path)} ({size:F1} МБ){extra}", StatusKind.Done);
             OpenFolderBtn.Visibility = Visibility.Visible;
         }
         finally
@@ -369,6 +406,27 @@ public partial class MainWindow : Window
 
     private void Glossary_LostFocus(object sender, RoutedEventArgs e) => SaveSettings();
 
+    /// <summary>
+    /// Тянет нижний край поля глоссария. Высоту забираем у ленты реплик, но не всю:
+    /// иначе на подрезанном по WorkArea окне транскрипт схлопывается в полоску.
+    /// </summary>
+    private void GlossaryGrip_DragDelta(object sender, DragDeltaEventArgs e)
+    {
+        double current = double.IsNaN(GlossaryBox.Height) ? GlossaryBox.ActualHeight : GlossaryBox.Height;
+        double room = current + TranscriptScroll.ActualHeight - MinFeedHeight;
+        double max = Math.Max(GlossaryMinHeight, Math.Min(GlossaryMaxHeight, room));
+        GlossaryBox.Height = Math.Clamp(current + e.VerticalChange, GlossaryMinHeight, max);
+    }
+
+    private void GlossaryGrip_DragCompleted(object sender, DragCompletedEventArgs e) => SaveSettings();
+
+    /// <summary>Двойной щелчок по ручке возвращает поле к исходным двум строкам.</summary>
+    private void GlossaryGrip_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        GlossaryBox.Height = GlossaryMinHeight;
+        SaveSettings();
+    }
+
     private void OwnerName_LostFocus(object sender, RoutedEventArgs e) => SaveSettings();
 
     private void Diarize_Changed(object sender, RoutedEventArgs e)
@@ -376,62 +434,227 @@ public partial class MainWindow : Window
         if (IsLoaded) SaveSettings(); // не писать на диск во время InitializeComponent
     }
 
-    /// <summary>Прогоняет транскрипт через LLM: восстанавливает английские термины и чинит ошибки распознавания.</summary>
-    private async void FixText_Click(object sender, RoutedEventArgs e)
+    /// <summary>
+    /// Меняет метки «Собеседник N» на имена, прозвучавшие в разговоре. Отдельный шаг
+    /// от коррекции текста: имена нужны не всегда, а стоят целого запроса к модели.
+    /// </summary>
+    private async void NameSpeakers_Click(object sender, RoutedEventArgs e)
     {
-        if (_finalTranscript is not { Count: > 0 } transcript || _lastFile is null) return;
-        if (OllamaModels.SelectedItem is not string model || string.IsNullOrWhiteSpace(model))
-        {
-            Status.Text = "Выберите модель Ollama во вкладке «Итоги».";
-            return;
-        }
+        if (!TryStartTranscriptEdit(out var transcript, out var model)) return;
 
-        _summaryCts?.Cancel();
-        _summaryCts = new CancellationTokenSource();
-
-        FixTextBtn.IsEnabled = false;
-        MakeSummaryBtn.IsEnabled = false;
-        Status.Text = $"Исправляю текст ({model})…";
-
+        // В списке задач «Собеседник 12» бесполезен, а имя участника почти всегда
+        // звучит в самом разговоре.
+        SetStatus($"Определяю имена участников ({model})…", StatusKind.Progress);
+        BeginTask(determinate: false);
         try
         {
-            // Сначала имена: в списке задач «Собеседник 12» бесполезен, а имя участника
-            // почти всегда звучит в самом разговоре.
-            Status.Text = $"Определяю имена участников ({model})…";
-            transcript = await SpeakerNamer.ApplyNamesAsync(
-                _ollama, model, transcript, _language, OwnerNameBox.Text, _summaryCts.Token);
+            var named = await SpeakerNamer.ApplyNamesAsync(
+                _ollama, model, transcript, _language, OwnerNameBox.Text, _summaryCts!.Token);
 
-            // Длинный транскрипт корректор гонит партиями — показываем, сколько реплик уже прошло.
-            var progress = new Progress<int>(done =>
-                Status.Text = $"Исправляю текст ({model}): {done} из {transcript.Count}…");
-            var fixedEntries = await TranscriptCorrector.CorrectAsync(
-                _ollama, model, transcript, GlossaryBox.Text, progress, _language, _summaryCts.Token);
+            // Сколько меток стало именами: модель могла не найти ничего надёжного,
+            // и тогда реплики возвращаются как были.
+            var left = named.Select(entry => entry.Speaker).ToHashSet(StringComparer.Ordinal);
+            int renamed = transcript.Select(entry => entry.Speaker).Distinct(StringComparer.Ordinal)
+                .Count(label => !Languages.IsMeLabel(label) && !left.Contains(label));
 
-            _finalTranscript = fixedEntries;
-            _transcript.Clear();
-            foreach (var entry in fixedEntries) _transcript.Add(entry);
-            TranscriptScroll.ScrollToEnd();
-
-            SaveTranscript(_lastFile, fixedEntries); // перезаписываем .транскрипт.md исправленным
-            Status.Text = $"Текст исправлен · реплик: {fixedEntries.Count}";
-        }
-        catch (OperationCanceledException)
-        {
-            Status.Text = "Исправление отменено.";
-        }
-        catch (Exception ex) when (ex is OllamaUnavailableException or OllamaModelMissingException)
-        {
-            Status.Text = ex.Message;
+            ApplyEditedTranscript(named);
+            if (renamed > 0) SetStatus($"Участники определены · имён: {renamed}", StatusKind.Done);
+            else SetStatus("Имена участников не определились — метки остались как были.");
         }
         catch (Exception ex)
         {
-            Status.Text = $"Ошибка исправления: {ex.Message}";
+            ShowEditError(ex, "Определение участников отменено.", "Ошибка определения участников");
         }
         finally
         {
-            FixTextBtn.IsEnabled = true;
-            MakeSummaryBtn.IsEnabled = true;
+            FinishTranscriptEdit();
         }
+    }
+
+    /// <summary>Прогоняет транскрипт через LLM: восстанавливает английские термины и чинит ошибки распознавания.</summary>
+    private async void FixText_Click(object sender, RoutedEventArgs e)
+    {
+        if (!TryStartTranscriptEdit(out var transcript, out var model)) return;
+
+        SetStatus($"Исправляю текст ({model})…", StatusKind.Progress);
+        BeginTask(determinate: true);
+        try
+        {
+            // Длинный транскрипт корректор гонит партиями — показываем, сколько реплик уже прошло.
+            int total = transcript.Count;
+            var progress = new Progress<int>(done =>
+            {
+                TaskBar.Value = (double)done / total;
+                SetStatus($"Исправляю текст ({model}): {done} из {total}…", StatusKind.Progress);
+            });
+            var fixedEntries = await TranscriptCorrector.CorrectAsync(
+                _ollama, model, transcript, GlossaryBox.Text, progress, _language, _summaryCts!.Token);
+
+            ApplyEditedTranscript(fixedEntries);
+            SetStatus($"Текст исправлен · реплик: {fixedEntries.Count}", StatusKind.Done);
+        }
+        catch (Exception ex)
+        {
+            ShowEditError(ex, "Исправление отменено.", "Ошибка исправления");
+        }
+        finally
+        {
+            FinishTranscriptEdit();
+        }
+    }
+
+    /// <summary>
+    /// Общее начало обоих шагов правки: есть ли что править и чем, отмена предыдущей
+    /// работы с LLM и блокировка кнопок.
+    /// </summary>
+    private bool TryStartTranscriptEdit(out IReadOnlyList<TranscriptEntry> transcript, out string model)
+    {
+        transcript = Array.Empty<TranscriptEntry>();
+        model = "";
+        if (_finalTranscript is not { Count: > 0 } entries || _lastFile is null) return false;
+        if (TranscriptModels.SelectedItem is not string selected || string.IsNullOrWhiteSpace(selected))
+        {
+            SetStatus("Выберите модель Ollama для правки транскрипта.", StatusKind.Error);
+            return false;
+        }
+
+        transcript = entries;
+        model = selected;
+
+        _summaryCts?.Cancel();
+        _summaryCts = new CancellationTokenSource();
+        SetTranscriptButtons(false);
+        MakeSummaryBtn.IsEnabled = false;
+        return true;
+    }
+
+    /// <summary>Показывает результат шага правки в ленте и перезаписывает <c>.транскрипт.md</c>.</summary>
+    private void ApplyEditedTranscript(IReadOnlyList<TranscriptEntry> entries)
+    {
+        _finalTranscript = entries;
+        _transcript.Clear();
+        foreach (var entry in entries) _transcript.Add(entry);
+        TranscriptScroll.ScrollToEnd();
+        SaveTranscript(_lastFile!, entries);
+    }
+
+    private void ShowEditError(Exception ex, string cancelled, string prefix)
+    {
+        if (ex is OperationCanceledException) SetStatus(cancelled);
+        else if (ex is OllamaUnavailableException or OllamaModelMissingException)
+            SetStatus(ex.Message, StatusKind.Error);
+        else SetStatus($"{prefix}: {ex.Message}", StatusKind.Error);
+    }
+
+    private void FinishTranscriptEdit()
+    {
+        EndTask();
+        SetTranscriptButtons(true);
+        MakeSummaryBtn.IsEnabled = true;
+    }
+
+    /// <summary>Обе кнопки правки гаснут и включаются вместе: шаги идут по одному транскрипту.</summary>
+    private void SetTranscriptButtons(bool enabled) =>
+        NameSpeakersBtn.IsEnabled = FixTextBtn.IsEnabled = enabled;
+
+    /// <summary>Чем именно является сообщение статуса: от этого иконка и цвет.</summary>
+    private enum StatusKind
+    {
+        /// <summary>Нейтральное сообщение: что выбрано, что готово к работе.</summary>
+        Info,
+        /// <summary>Идёт длинная работа — запись, докачка модели, запрос к LLM.</summary>
+        Progress,
+        /// <summary>Работа закончена успешно, файл на диске.</summary>
+        Done,
+        /// <summary>Что-то не вышло. Раньше ошибка выглядела ровно как успех.</summary>
+        Error
+    }
+
+    private void SetStatus(string text, StatusKind kind = StatusKind.Info)
+    {
+        Status.Text = text;
+        var (glyph, brush) = kind switch
+        {
+            StatusKind.Progress => ("\uE895", "MutedBrush"),   // Sync
+            StatusKind.Done => ("\uE73E", "GreenBrush"),       // CheckMark
+            StatusKind.Error => ("\uE783", "AccentBrush"),     // Error
+            _ => ("\uE930", "MutedBrush")                      // Info
+        };
+        StatusIcon.Text = glyph;
+        var colour = (System.Windows.Media.Brush)FindResource(brush);
+        StatusIcon.Foreground = colour;
+        Status.Foreground = kind == StatusKind.Info ? (System.Windows.Media.Brush)FindResource("MutedBrush") : colour;
+    }
+
+    // ── 2. Длинная работа LLM: полоса прогресса и отмена ──
+
+    /// <summary>
+    /// Показывает полосу задачи. <paramref name="determinate"/> = известно ли, сколько
+    /// работы всего: коррекция знает число реплик, имена и итоги — нет.
+    /// </summary>
+    private void BeginTask(bool determinate)
+    {
+        TaskBar.IsIndeterminate = !determinate;
+        TaskBar.Value = 0;
+        CancelTaskBtn.IsEnabled = true;
+        TaskBar.Visibility = Visibility.Visible;
+        CancelTaskBtn.Visibility = Visibility.Visible;
+    }
+
+    private void EndTask()
+    {
+        TaskBar.Visibility = Visibility.Collapsed;
+        CancelTaskBtn.Visibility = Visibility.Collapsed;
+    }
+
+    private void CancelTask_Click(object sender, RoutedEventArgs e)
+    {
+        CancelTaskBtn.IsEnabled = false; // повторный клик уже ничего не добавит
+        _summaryCts?.Cancel();
+    }
+
+    /// <summary>Свёрнут ли блок настроек вкладки — состояние переживает перезапуск.</summary>
+    private void TranscriptSettings_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (IsLoaded) SaveSettings();
+    }
+
+    /// <summary>
+    /// Заполняет окно образцом данных для <c>--ui-shot</c>: лента реплик, полоса длинной
+    /// задачи и статус-ошибка. Без этого снимок всегда показывает пустое окно, и вёрстку
+    /// ленты приходится проверять живой записью.
+    /// </summary>
+    internal void FillLayoutSample()
+    {
+        var sample = new[]
+        {
+            new TranscriptEntry("Собеседник 1", "Давайте начнём с релиза. Сборка 1.8.3 ушла в тест вчера вечером, " +
+                                                "критичных падений пока нет.", TimeSpan.FromSeconds(12)),
+            new TranscriptEntry("Я", "А что с интерстишлами? На прошлой неделе они не грузились на части устройств.",
+                                TimeSpan.FromSeconds(31)),
+            new TranscriptEntry("Собеседник 2", "Починили, дело было в конфиге AppLovin. Сейчас fill rate вернулся " +
+                                               "к обычным значениям.", TimeSpan.FromSeconds(44)),
+            new TranscriptEntry("Собеседник 3", "Передаю слово Марине — у неё цифры по ретеншну.",
+                                TimeSpan.FromSeconds(78)),
+            new TranscriptEntry("Собеседник 4", "День второй держится на сорока двух процентах, это на три пункта " +
+                                               "выше, чем в прошлом билде.", TimeSpan.FromSeconds(85)),
+            new TranscriptEntry("Я", "Отлично. Тогда собираем Battle Pass к следующему спринту.",
+                                TimeSpan.FromSeconds(140)),
+        };
+        _transcript.Clear();
+        foreach (var entry in sample) _transcript.Add(entry);
+        TranscriptEmpty.Visibility = Visibility.Collapsed;
+
+        SetTranscriptButtons(true);
+        MakeSummaryBtn.IsEnabled = true;
+
+        // Прогоняем и неопределённый режим: его пульсацию запускает триггер шаблона,
+        // и сломанный Storyboard выстрелил бы только в момент переключения — то есть
+        // у пользователя посреди работы модели, а не на сборке.
+        BeginTask(determinate: false);
+        BeginTask(determinate: true);
+        TaskBar.Value = 0.42;
+        SetStatus("Исправляю текст (qwen3.5:9b): 220 из 526…", StatusKind.Progress);
     }
 
     private void LoadSettings()
@@ -444,8 +667,12 @@ public partial class MainWindow : Window
                 MergeGapSlider.Value = Math.Clamp(gap.GetDouble(), MergeGapSlider.Minimum, MergeGapSlider.Maximum);
             if (doc.RootElement.TryGetProperty("glossary", out var gl))
                 GlossaryBox.Text = gl.GetString() ?? "";
+            if (doc.RootElement.TryGetProperty("glossaryHeight", out var gh))
+                GlossaryBox.Height = Math.Clamp(gh.GetDouble(), GlossaryMinHeight, GlossaryMaxHeight);
             if (doc.RootElement.TryGetProperty("ownerName", out var owner))
                 OwnerNameBox.Text = owner.GetString() ?? "";
+            if (doc.RootElement.TryGetProperty("transcriptSettingsOpen", out var open))
+                TranscriptSettingsToggle.IsChecked = open.GetBoolean();
             if (doc.RootElement.TryGetProperty("diarizeSpeakers", out var di))
                 DiarizeCheck.IsChecked = di.GetBoolean();
             if (doc.RootElement.TryGetProperty("language", out var lang))
@@ -467,8 +694,11 @@ public partial class MainWindow : Window
             {
                 mergeGapSeconds = MergeGapSlider.Value,
                 glossary = GlossaryBox.Text,
+                // Высота всегда задана явно, но NaN в JSON не сериализуется — подстрахуемся.
+                glossaryHeight = double.IsNaN(GlossaryBox.Height) ? GlossaryMinHeight : GlossaryBox.Height,
                 ownerName = OwnerNameBox.Text,
                 diarizeSpeakers = DiarizeCheck.IsChecked == true,
+                transcriptSettingsOpen = TranscriptSettingsToggle.IsChecked == true,
                 language = _language.Language.ToString()
             }));
         }
@@ -527,7 +757,7 @@ public partial class MainWindow : Window
         if (_finalTranscript is not { Count: > 0 } transcript || _lastFile is null) return;
         if (OllamaModels.SelectedItem is not string model || string.IsNullOrWhiteSpace(model))
         {
-            Status.Text = "Выберите модель Ollama.";
+            SetStatus("Выберите модель Ollama.", StatusKind.Error);
             return;
         }
 
@@ -538,7 +768,8 @@ public partial class MainWindow : Window
         MakeSummaryBtn.IsEnabled = false;
         RightTabs.SelectedIndex = 1;
         SummaryBox.Clear();
-        Status.Text = $"Формирую итоги ({model})…";
+        SetStatus($"Формирую итоги ({model})…", StatusKind.Progress);
+        BeginTask(determinate: false);
 
         try
         {
@@ -546,7 +777,7 @@ public partial class MainWindow : Window
             var outcome = new ChatOutcome();
             // Длинная встреча не влезает в окно локальной модели — SummaryComposer идёт по частям
             // и сообщает через stage, на какой он сейчас.
-            var stage = new Progress<string>(text => Status.Text = $"{text} ({model})");
+            var stage = new Progress<string>(text => SetStatus($"{text} ({model})", StatusKind.Progress));
             await foreach (var chunk in SummaryComposer.ComposeAsync(
                 _ollama, model, transcript, stage, outcome, _language, GlossaryBox.Text, ct))
             {
@@ -556,24 +787,27 @@ public partial class MainWindow : Window
             }
 
             File.WriteAllText(SummaryPath(_lastFile), sb.ToString(), Encoding.UTF8);
-            Status.Text = outcome.HitContextLimit
-                ? $"Итоги оборвались: модель «{model}» упёрлась в окно контекста или в предел длины ответа. Сохранено: {Path.GetFileName(SummaryPath(_lastFile))}"
-                : $"Итоги сохранены: {Path.GetFileName(SummaryPath(_lastFile))}";
+            if (outcome.HitContextLimit)
+                SetStatus($"Итоги оборвались: модель «{model}» упёрлась в окно контекста или в предел длины ответа. " +
+                          $"Сохранено: {Path.GetFileName(SummaryPath(_lastFile))}", StatusKind.Error);
+            else
+                SetStatus($"Итоги сохранены: {Path.GetFileName(SummaryPath(_lastFile))}", StatusKind.Done);
         }
         catch (OperationCanceledException)
         {
-            Status.Text = "Формирование итогов отменено.";
+            SetStatus("Формирование итогов отменено.");
         }
         catch (Exception ex) when (ex is OllamaUnavailableException or OllamaModelMissingException)
         {
-            Status.Text = ex.Message;
+            SetStatus(ex.Message, StatusKind.Error);
         }
         catch (Exception ex)
         {
-            Status.Text = $"Ошибка итогов: {ex.Message}";
+            SetStatus($"Ошибка итогов: {ex.Message}", StatusKind.Error);
         }
         finally
         {
+            EndTask();
             MakeSummaryBtn.IsEnabled = true;
         }
     }
@@ -608,13 +842,13 @@ public partial class MainWindow : Window
 
         if (_engine.Error is { } err)
         {
-            Status.Text = $"Ошибка записи: {err.Message}";
+            SetStatus($"Ошибка записи: {err.Message}", StatusKind.Error);
             _ = StopRecordingAsync();
             return;
         }
         if (_stt?.Error is { } sttErr)
         {
-            Status.Text = $"Транскрипция остановлена: {sttErr.Message}";
+            SetStatus($"Транскрипция остановлена: {sttErr.Message}", StatusKind.Error);
         }
 
         Timer.Text = _engine.Elapsed.ToString(@"hh\:mm\:ss");
