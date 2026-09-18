@@ -53,17 +53,20 @@ public static class SummaryPrompt
         2–4 предложения: зачем собрались и о чём договорились.
 
         ## Ключевые темы и решения
-        Маркированный список, по одному пункту на тему, в порядке обсуждения, например:
-        - **Миграция базы** — переносим на новую схему, потому что старая не тянет нагрузку.
-        - **Дизайн главного экрана** — решения нет, вернулись к обсуждению на следующей встрече.
+        Маркированный список, по одному пункту на тему, в порядке обсуждения. Образец формы
+        (содержание бери только из транскрипта):
+        - **Цены на подписку** — поднимаем на 10 % с ноября, конкуренты уже подняли.
+        - **Логотип** — решения нет, вернулись к обсуждению на следующей встрече.
 
         ## Задачи
-        Маркированный список, по одному пункту на задачу, без таблицы, например:
-        - Поднять тестовый стенд и выдать доступы — исполнитель: Собеседник 1 — срок: четверг
-        - Прогнать тесты по авторизации — исполнитель: Я — срок: не назван
-        Одна задача — один пункт, повторять её в разных формулировках не нужно. Исполнитель —
-        ровно один: «Я», «Собеседник N» или имя; если он не назван, пиши «исполнитель: не определён»,
-        а не список участников. Если задач нет — «Нет».
+        Маркированный список, по одному пункту на задачу, без таблицы. Каждая строка — ровно
+        три части через « — »: что сделать, «исполнитель: …», «срок: …». Образец формы:
+        - Согласовать договор с подрядчиком — исполнитель: Собеседник 2 — срок: 15 октября
+        - Собрать отзывы пользователей — исполнитель: Я — срок: не назван
+        «срок:» пишется в КАЖДОЙ строке; если срок не прозвучал — «срок: не назван».
+        Одна задача — один пункт, даже если её взяли на себя двое: не дублируй её для каждого.
+        Исполнитель — ровно один: «Я», «Собеседник N» или имя; если его не назвали или вызвались
+        несколько — «исполнитель: не определён», а не список участников. Если задач нет — «Нет».
 
         ## Открытые вопросы
         Маркированный список: вопросы без ответа и решения, отложенные на потом.
@@ -111,17 +114,20 @@ public static class SummaryPrompt
         2–4 sentences: why the meeting happened and what was agreed.
 
         ## Key topics and decisions
-        A bulleted list, one bullet per topic, in the order discussed, for example:
-        - **Database migration** — moving to the new schema, the old one cannot take the load.
-        - **Home screen design** — nothing decided, taken to the next meeting.
+        A bulleted list, one bullet per topic, in the order discussed. A sample of the form
+        (take the content from the transcript only):
+        - **Subscription pricing** — going up by 10% from November, competitors already did.
+        - **Logo** — nothing decided, taken to the next meeting.
 
         ## Tasks
-        A bulleted list, one bullet per task, no table, for example:
-        - Bring up the staging environment and grant access — owner: Speaker 1 — due: Thursday
-        - Run the tests for the authorisation change — owner: Me — due: not named
-        One task, one bullet — no need to restate it in different words. Exactly one owner:
-        "Me", "Speaker N" or a name; if none was named, write "owner: unassigned" rather than
-        a list of participants. If there are none — "None".
+        A bulleted list, one bullet per task, no table. Every line has exactly three parts
+        joined by " — ": what to do, "owner: …", "due: …". A sample of the form:
+        - Sign off the contractor agreement — owner: Speaker 2 — due: 15 October
+        - Collect user feedback — owner: Me — due: not named
+        Write "due:" on EVERY line; if no date was given — "due: not named".
+        One task, one bullet, even if two people took it on: do not repeat it for each of them.
+        Exactly one owner: "Me", "Speaker N" or a name; if none was named or several volunteered,
+        write "owner: unassigned" rather than a list of participants. If there are none — "None".
 
         ## Open questions
         A bulleted list: questions left unanswered and decisions postponed.

@@ -29,7 +29,7 @@ The interface language is independent of the speech language: an English interfa
 - Windows 10/11
 - [.NET 10 SDK](https://dotnet.microsoft.com/download) (to build)
 - ~300 MB of disk space for the recognition models (another ~660 MB if you need English)
-- For notes and text correction — [Ollama](https://ollama.com/) on `localhost:11434` with any instruction-tuned model that handles Russian well (`qwen3.5:9b` is preselected)
+- For notes and text correction — [Ollama](https://ollama.com/) on `localhost:11434` with any instruction-tuned model that handles Russian well (`qwen3.5-text:9b` is preselected — it fits entirely into 8 GB of VRAM; install it with `ollama pull qwen3.5-text:9b`)
 
 ## Build and run
 
