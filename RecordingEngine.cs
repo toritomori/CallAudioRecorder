@@ -88,7 +88,8 @@ public sealed class RecordingEngine : IDisposable
         _systemCapture = systemProcessId is int pid
             ? new Services.ProcessLoopbackCapture(pid)
             : new WasapiLoopbackCapture(renderDevice ?? throw new ArgumentNullException(nameof(renderDevice),
-                "Нужно устройство вывода или приложение-источник."));
+                Services.Loc.T("Нужно устройство вывода или приложение-источник.",
+                    "An output device or a source app is required.")));
         _micCapture = new WasapiCapture(captureDevice);
 
         _systemBuffer = CreateBuffer(_systemCapture.WaveFormat);
@@ -180,7 +181,9 @@ public sealed class RecordingEngine : IDisposable
             sp = new MonoToStereoSampleProvider(sp);
         else if (sp.WaveFormat.Channels > 2)
             throw new NotSupportedException(
-                $"Устройства с {sp.WaveFormat.Channels} каналами не поддерживаются. Выберите стерео- или моно-устройство.");
+                Services.Loc.T(
+                    $"Устройства с {sp.WaveFormat.Channels} каналами не поддерживаются. Выберите стерео- или моно-устройство.",
+                    $"Devices with {sp.WaveFormat.Channels} channels are not supported. Pick a stereo or mono device."));
         if (sp.WaveFormat.SampleRate != MixRate)
             sp = new WdlResamplingSampleProvider(sp, MixRate);
         return sp;

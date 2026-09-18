@@ -120,10 +120,12 @@ public static class ModelDownloader
                 }
             }
             if (last is not null)
-                throw new IOException($"Не удалось скачать {f.Name}: {last.Message}", last);
+                throw new IOException(Loc.T($"Не удалось скачать {f.Name}: {last.Message}",
+                    $"Could not download {f.Name}: {last.Message}"), last);
 
             if (new FileInfo(path).Length < f.MinBytes)
-                throw new IOException($"Файл {f.Name} скачался неполным — попробуйте ещё раз.");
+                throw new IOException(Loc.T($"Файл {f.Name} скачался неполным — попробуйте ещё раз.",
+                    $"{f.Name} downloaded incompletely — please try again."));
         }
     }
 
@@ -156,7 +158,7 @@ public static class ModelDownloader
                         if (pct != lastPct)
                         {
                             lastPct = pct;
-                            progress.Report($"Загрузка {name}: {pct}%");
+                            progress.Report(Loc.T($"Загрузка {name}: {pct}%", $"Downloading {name}: {pct}%"));
                         }
                     }
                 }

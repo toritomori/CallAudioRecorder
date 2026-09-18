@@ -30,11 +30,20 @@ public static class UiShot
     /// <param name="width">Ширина окна для снимка; 0 — как задано в XAML.</param>
     /// <param name="height">Высота окна для снимка; 0 — как задано в XAML.</param>
     /// <param name="sample">Заполнить окно образцом реплик и показать полосу задачи.</param>
-    public static void Run(string pngPath, string logPath, double width = 0, double height = 0, bool sample = false)
+    /// <param name="english">
+    /// Язык интерфейса для снимка; null — как у приложения (settings.json, иначе язык Windows).
+    /// Английские надписи длиннее русских или короче — вёрстку проверяют на обоих.
+    /// </param>
+    public static void Run(string pngPath, string logPath, double width = 0, double height = 0, bool sample = false,
+        bool? english = null)
     {
         var log = new StringBuilder();
         try
         {
+            Services.Loc.English = english ?? Services.Loc.Resolve(MainWindow.ReadSavedUiLanguage(),
+                System.Globalization.CultureInfo.CurrentUICulture);
+            log.AppendLine($"интерфейс: {(Services.Loc.English ? "English" : "русский")}");
+
             var window = new MainWindow
             {
                 WindowStartupLocation = WindowStartupLocation.Manual,

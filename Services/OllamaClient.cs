@@ -77,7 +77,7 @@ public sealed class OllamaClient : IChatClient, IDisposable
         catch (HttpRequestException ex) when (ex.InnerException is SocketException)
         {
             throw new OllamaUnavailableException(
-                "Ollama не запущен. Запустите Ollama и повторите.", ex);
+                Loc.T("Ollama не запущен. Запустите Ollama и повторите.", "Ollama is not running. Start Ollama and try again."), ex);
         }
     }
 
@@ -237,14 +237,15 @@ public sealed class OllamaClient : IChatClient, IDisposable
         }
         catch (HttpRequestException ex) when (ex.InnerException is SocketException)
         {
-            throw new OllamaUnavailableException("Ollama не запущен. Запустите Ollama и повторите.", ex);
+            throw new OllamaUnavailableException(Loc.T("Ollama не запущен. Запустите Ollama и повторите.", "Ollama is not running. Start Ollama and try again."), ex);
         }
 
         if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
         {
             response.Dispose();
             throw new OllamaModelMissingException(
-                $"Модель «{model}» не установлена. Выполните в терминале: ollama pull {model}");
+                Loc.T($"Модель «{model}» не установлена. Выполните в терминале: ollama pull {model}",
+                    $"Model “{model}” is not installed. Run in a terminal: ollama pull {model}"));
         }
         response.EnsureSuccessStatusCode();
         return response;

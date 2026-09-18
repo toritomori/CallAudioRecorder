@@ -45,7 +45,24 @@ public partial class MainWindow : Window
     private readonly List<TranscriptEntry> _recognized = new();
     private readonly OllamaClient _ollama = new();
 
-    private LanguageProfile _language = Languages.Russian;
+    /// <summary>Язык записи до первого выбора — тот же, что у интерфейса; сохранённый выбор важнее.</summary>
+    private LanguageProfile _language = Loc.English ? Languages.English : Languages.Russian;
+
+    /// <summary>
+    /// Язык распознавания, выбранный в списке вручную; null — не выбирали, и он следует
+    /// за языком интерфейса (в том числе после переключения кнопкой EN/RU). Раньше язык
+    /// писался в settings.json при любом сохранении настроек и закреплялся за первым
+    /// значением: английский интерфейс оставался с русским распознаванием.
+    /// </summary>
+    private string? _speechLanguageChoice;
+
+    /// <summary>
+    /// Язык интерфейса, выбранный кнопкой в заголовке: «Russian»/«English», null — не выбирали,
+    /// решает язык Windows. Пока выбора нет, в settings.json и не пишем ничего своего: иначе
+    /// первый же SaveSettings навсегда закрепил бы язык машины, на которой приложение запустили.
+    /// </summary>
+    private string? _uiLanguageChoice;
+
     private RecordingEngine? _engine;
     private TranscriptionService? _stt;
     private IReadOnlyList<TranscriptEntry>? _finalTranscript;
@@ -158,14 +175,22 @@ public partial class MainWindow : Window
     {
         if (LanguageBox?.SelectedItem is not LanguageProfile profile) return;
         _language = profile;
-        if (IsLoaded) SaveSettings();
+        // До загрузки окна список заполняется программно — это ещё не выбор пользователя.
+        if (IsLoaded)
+        {
+            _speechLanguageChoice = profile.Language.ToString();
+            SaveSettings();
+        }
 
         // Модель другого языка качается при первой записи — предупреждаем заранее, объём заметный.
         if (!ModelDownloader.ModelsPresent(profile))
-            SetStatus($"Язык: {profile.DisplayName}. Модель (~{ModelDownloader.MissingMegabytes(profile)} МБ) " +
-                      "будет загружена при старте записи.");
+            SetStatus(Loc.T(
+                $"Язык: {profile.DisplayName}. Модель (~{ModelDownloader.MissingMegabytes(profile)} МБ) " +
+                "будет загружена при старте записи.",
+                $"Language: {profile.DisplayName}. The model (~{ModelDownloader.MissingMegabytes(profile)} MB) " +
+                "will be downloaded when recording starts."));
         else
-            SetStatus($"Язык распознавания: {profile.DisplayName}");
+            SetStatus(Loc.T($"Язык распознавания: {profile.DisplayName}", $"Speech language: {profile.DisplayName}"));
     }
 
     /// <summary>Жив ли процесс: PID из списка мог протухнуть, пока пользователь выбирал.</summary>
@@ -231,20 +256,21 @@ public partial class MainWindow : Window
         var sourceWindow = (SystemSource.SelectedItem as SystemSourceItem)?.Window;
         if (CaptureDevices.SelectedItem is not DeviceItem capture)
         {
-            SetStatus("Выберите микрофон.", StatusKind.Error);
+            SetStatus(Loc.T("Выберите микрофон.", "Pick a microphone."), StatusKind.Error);
             return;
         }
         if (sourceWindow is null && RenderDevices.SelectedItem is not DeviceItem)
         {
-            SetStatus("Выберите устройство вывода или приложение-источник.", StatusKind.Error);
+            SetStatus(Loc.T("Выберите устройство вывода или приложение-источник.",
+                "Pick an output device or a source app."), StatusKind.Error);
             return;
         }
 
         // Окно могло закрыться, пока список висел на экране, — PID стал бы чужим.
         if (sourceWindow is not null && !ProcessAlive(sourceWindow.ProcessId))
         {
-            SetStatus($"Приложение «{sourceWindow.ProcessName}» уже закрыто. Обновите список источников.",
-                StatusKind.Error);
+            SetStatus(Loc.T($"Приложение «{sourceWindow.ProcessName}» уже закрыто. Обновите список источников.",
+                $"“{sourceWindow.ProcessName}” has already exited. Refresh the source list."), StatusKind.Error);
             LoadSystemSources();
             return;
         }
@@ -252,7 +278,7 @@ public partial class MainWindow : Window
         var folder = OutputFolder.Text.Trim();
         if (!Directory.Exists(folder))
         {
-            SetStatus($"Папка не найдена: {folder}", StatusKind.Error);
+            SetStatus(Loc.T($"Папка не найдена: {folder}", $"Folder not found: {folder}"), StatusKind.Error);
             return;
         }
 
@@ -270,7 +296,8 @@ public partial class MainWindow : Window
                 }
                 catch (Exception ex)
                 {
-                    SetStatus($"Модели не загрузились: {ex.Message} Запись без транскрипта.", StatusKind.Error);
+                    SetStatus(Loc.T($"Модели не загрузились: {ex.Message} Запись без транскрипта.",
+                        $"Models failed to download: {ex.Message} Recording without a transcript."), StatusKind.Error);
                     transcribe = false;
                 }
                 finally
@@ -280,7 +307,8 @@ public partial class MainWindow : Window
             }
 
             int bitrate = Br128.IsChecked == true ? 128 : Br320.IsChecked == true ? 320 : 192;
-            var path = Path.Combine(folder, $"Запись_{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.mp3");
+            var path = Path.Combine(folder,
+                $"{Loc.T("Запись", "Recording")}_{DateTime.Now:yyyy-MM-dd_HH-mm-ss}.mp3");
 
             try
             {
@@ -294,7 +322,7 @@ public partial class MainWindow : Window
 
                 if (transcribe)
                 {
-                    SetStatus("Загружаю модель распознавания…", StatusKind.Progress);
+                    SetStatus(Loc.T("Загружаю модель распознавания…", "Loading the speech model…"), StatusKind.Progress);
                     var engine = _engine;
                     var hotwords = TranscriptCorrector.ToHotwords(GlossaryBox.Text, _language);
                     // Глоссарий работает с двух сторон: hotwords смещают распознавание к нужным
@@ -315,7 +343,8 @@ public partial class MainWindow : Window
                 _stt = null;
                 _engine?.Dispose();
                 _engine = null;
-                SetStatus($"Не удалось начать запись: {ex.Message}", StatusKind.Error);
+                SetStatus(Loc.T($"Не удалось начать запись: {ex.Message}", $"Could not start recording: {ex.Message}"),
+                    StatusKind.Error);
                 return;
             }
 
@@ -328,7 +357,8 @@ public partial class MainWindow : Window
 
             _uiTimer.Start();
             SetRecordingUi(true);
-            SetStatus($"Идёт запись: {Path.GetFileName(path)}" + (transcribe ? " · транскрипция включена" : ""),
+            SetStatus(Loc.T($"Идёт запись: {Path.GetFileName(path)}", $"Recording: {Path.GetFileName(path)}") +
+                      (transcribe ? Loc.T(" · транскрипция включена", " · transcription on") : ""),
                 StatusKind.Progress);
         }
         finally
@@ -347,7 +377,7 @@ public partial class MainWindow : Window
 
             if (_stt is { } stt)
             {
-                SetStatus("Распознаю остаток речи…", StatusKind.Progress);
+                SetStatus(Loc.T("Распознаю остаток речи…", "Recognizing the remaining speech…"), StatusKind.Progress);
                 _finalTranscript = await Task.Run(stt.StopAndDrain);
                 stt.Dispose();
                 _stt = null;
@@ -366,8 +396,9 @@ public partial class MainWindow : Window
 
             var size = new FileInfo(path).Length / 1024.0 / 1024.0;
             var extra = _finalTranscript is { Count: > 0 }
-                ? $" · реплик: {_finalTranscript.Count}" : "";
-            SetStatus($"Сохранено: {Path.GetFileName(path)} ({size:F1} МБ){extra}", StatusKind.Done);
+                ? Loc.T($" · реплик: {_finalTranscript.Count}", $" · utterances: {_finalTranscript.Count}") : "";
+            SetStatus(Loc.T($"Сохранено: {Path.GetFileName(path)} ({size:F1} МБ){extra}",
+                $"Saved: {Path.GetFileName(path)} ({size:F1} MB){extra}"), StatusKind.Done);
             OpenFolderBtn.Visibility = Visibility.Visible;
         }
         finally
@@ -444,7 +475,8 @@ public partial class MainWindow : Window
 
         // В списке задач «Собеседник 12» бесполезен, а имя участника почти всегда
         // звучит в самом разговоре.
-        SetStatus($"Определяю имена участников ({model})…", StatusKind.Progress);
+        SetStatus(Loc.T($"Определяю имена участников ({model})…", $"Naming the speakers ({model})…"),
+            StatusKind.Progress);
         BeginTask(determinate: false);
         try
         {
@@ -458,12 +490,17 @@ public partial class MainWindow : Window
                 .Count(label => !Languages.IsMeLabel(label) && !left.Contains(label));
 
             ApplyEditedTranscript(named);
-            if (renamed > 0) SetStatus($"Участники определены · имён: {renamed}", StatusKind.Done);
-            else SetStatus("Имена участников не определились — метки остались как были.");
+            if (renamed > 0)
+                SetStatus(Loc.T($"Участники определены · имён: {renamed}", $"Speakers named · names: {renamed}"),
+                    StatusKind.Done);
+            else
+                SetStatus(Loc.T("Имена участников не определились — метки остались как были.",
+                    "No speaker names found — the labels are left as they were."));
         }
         catch (Exception ex)
         {
-            ShowEditError(ex, "Определение участников отменено.", "Ошибка определения участников");
+            ShowEditError(ex, Loc.T("Определение участников отменено.", "Naming speakers cancelled."),
+                Loc.T("Ошибка определения участников", "Naming speakers failed"));
         }
         finally
         {
@@ -476,7 +513,7 @@ public partial class MainWindow : Window
     {
         if (!TryStartTranscriptEdit(out var transcript, out var model)) return;
 
-        SetStatus($"Исправляю текст ({model})…", StatusKind.Progress);
+        SetStatus(Loc.T($"Исправляю текст ({model})…", $"Fixing the text ({model})…"), StatusKind.Progress);
         BeginTask(determinate: true);
         try
         {
@@ -485,17 +522,20 @@ public partial class MainWindow : Window
             var progress = new Progress<int>(done =>
             {
                 TaskBar.Value = (double)done / total;
-                SetStatus($"Исправляю текст ({model}): {done} из {total}…", StatusKind.Progress);
+                SetStatus(Loc.T($"Исправляю текст ({model}): {done} из {total}…",
+                    $"Fixing the text ({model}): {done} of {total}…"), StatusKind.Progress);
             });
             var fixedEntries = await TranscriptCorrector.CorrectAsync(
                 _ollama, model, transcript, GlossaryBox.Text, progress, _language, _summaryCts!.Token);
 
             ApplyEditedTranscript(fixedEntries);
-            SetStatus($"Текст исправлен · реплик: {fixedEntries.Count}", StatusKind.Done);
+            SetStatus(Loc.T($"Текст исправлен · реплик: {fixedEntries.Count}",
+                $"Text fixed · utterances: {fixedEntries.Count}"), StatusKind.Done);
         }
         catch (Exception ex)
         {
-            ShowEditError(ex, "Исправление отменено.", "Ошибка исправления");
+            ShowEditError(ex, Loc.T("Исправление отменено.", "Text fixing cancelled."),
+                Loc.T("Ошибка исправления", "Text fixing failed"));
         }
         finally
         {
@@ -514,7 +554,8 @@ public partial class MainWindow : Window
         if (_finalTranscript is not { Count: > 0 } entries || _lastFile is null) return false;
         if (TranscriptModels.SelectedItem is not string selected || string.IsNullOrWhiteSpace(selected))
         {
-            SetStatus("Выберите модель Ollama для правки транскрипта.", StatusKind.Error);
+            SetStatus(Loc.T("Выберите модель Ollama для правки транскрипта.",
+                "Pick an Ollama model for editing the transcript."), StatusKind.Error);
             return false;
         }
 
@@ -620,13 +661,88 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
+    /// Переключает язык интерфейса. Надписи XAML берутся один раз при загрузке разметки,
+    /// поэтому окно пересоздаётся — на том же месте и с той же последней записью: транскрипт
+    /// и итоги на экране терять незачем.
+    /// </summary>
+    private void UiLanguage_Click(object sender, RoutedEventArgs e)
+    {
+        // Закрытие окна оборвало бы и запись, и работу модели — их надо сперва закончить.
+        if (_engine is not null || _busy || TaskBar.Visibility == Visibility.Visible)
+        {
+            SetStatus(Loc.T("Язык интерфейса можно сменить, когда закончатся запись и работа модели.",
+                "The interface language can be changed once recording and model work are finished."),
+                StatusKind.Error);
+            return;
+        }
+
+        Loc.English = !Loc.English;
+        _uiLanguageChoice = Loc.English ? "English" : "Russian";
+        SaveSettings();
+
+        var next = new MainWindow
+        {
+            WindowStartupLocation = WindowStartupLocation.Manual,
+            Left = Left,
+            Top = Top,
+            Width = Width,
+            Height = Height
+        };
+        next.AdoptSession(this);
+        Application.Current.MainWindow = next;
+        next.Show();
+        Close();
+    }
+
+    /// <summary>Переносит в новое окно то, что не лежит в settings.json: папку, микшер и последнюю запись.</summary>
+    private void AdoptSession(MainWindow old)
+    {
+        OutputFolder.Text = old.OutputFolder.Text;
+        Br128.IsChecked = old.Br128.IsChecked;
+        Br192.IsChecked = old.Br192.IsChecked;
+        Br320.IsChecked = old.Br320.IsChecked;
+        SystemGain.Value = old.SystemGain.Value;
+        MicGain.Value = old.MicGain.Value;
+        TranscribeCheck.IsChecked = old.TranscribeCheck.IsChecked;
+        RightTabs.SelectedIndex = old.RightTabs.SelectedIndex;
+
+        _lastFile = old._lastFile;
+        OpenFolderBtn.Visibility = old.OpenFolderBtn.Visibility;
+        if (old._finalTranscript is { Count: > 0 } transcript)
+        {
+            _finalTranscript = transcript;
+            ShowBlocks(transcript);
+            SetTranscriptButtons(true);
+            MakeSummaryBtn.IsEnabled = true;
+        }
+        SummaryBox.Text = old.SummaryBox.Text;
+        SetStatus(Loc.T("Язык интерфейса: русский.", "Interface language: English."));
+    }
+
+    /// <summary>
     /// Заполняет окно образцом данных для <c>--ui-shot</c>: лента реплик, полоса длинной
     /// задачи и статус-ошибка. Без этого снимок всегда показывает пустое окно, и вёрстку
     /// ленты приходится проверять живой записью.
     /// </summary>
     internal void FillLayoutSample()
     {
-        var sample = new[]
+        // Образец на языке интерфейса: английские надписи длиннее, и вёрстку надо видеть
+        // с настоящими английскими репликами, а не с русскими в английском окне.
+        var sample = Loc.English ? new[]
+        {
+            new TranscriptEntry("Speaker 1", "Let us start with the release. Build 1.8.3 went to QA last night, " +
+                                             "no critical crashes so far.", TimeSpan.FromSeconds(12)),
+            new TranscriptEntry("Me", "What about the interstitials? Last week they failed to load on some devices.",
+                                TimeSpan.FromSeconds(31)),
+            new TranscriptEntry("Speaker 2", "Fixed, it was the AppLovin config. Fill rate is back to normal now.",
+                                TimeSpan.FromSeconds(44)),
+            new TranscriptEntry("Speaker 3", "Over to Marina, she has the retention numbers.",
+                                TimeSpan.FromSeconds(78)),
+            new TranscriptEntry("Speaker 4", "Day two retention holds at forty-two percent, three points higher " +
+                                             "than the previous build.", TimeSpan.FromSeconds(85)),
+            new TranscriptEntry("Me", "Great. Then we ship the Battle Pass in the next sprint.",
+                                TimeSpan.FromSeconds(140)),
+        } : new[]
         {
             new TranscriptEntry("Собеседник 1", "Давайте начнём с релиза. Сборка 1.8.3 ушла в тест вчера вечером, " +
                                                 "критичных падений пока нет.", TimeSpan.FromSeconds(12)),
@@ -654,7 +770,8 @@ public partial class MainWindow : Window
         BeginTask(determinate: false);
         BeginTask(determinate: true);
         TaskBar.Value = 0.42;
-        SetStatus("Исправляю текст (qwen3.5:9b): 220 из 526…", StatusKind.Progress);
+        SetStatus(Loc.T("Исправляю текст (qwen3.5:9b): 220 из 526…", "Fixing the text (qwen3.5:9b): 220 of 526…"),
+            StatusKind.Progress);
     }
 
     private void LoadSettings()
@@ -675,8 +792,17 @@ public partial class MainWindow : Window
                 TranscriptSettingsToggle.IsChecked = open.GetBoolean();
             if (doc.RootElement.TryGetProperty("diarizeSpeakers", out var di))
                 DiarizeCheck.IsChecked = di.GetBoolean();
-            if (doc.RootElement.TryGetProperty("language", out var lang))
-                _language = Languages.Parse(lang.GetString());
+            if (doc.RootElement.TryGetProperty("speechLanguage", out var speech)
+                && speech.ValueKind == System.Text.Json.JsonValueKind.String)
+                _speechLanguageChoice = speech.GetString();
+            // Старый ключ писался при любом сохранении, и «Russian» в нём — чаще прежний
+            // умолчательный язык, чем выбор. А «English» мог появиться только из списка.
+            else if (doc.RootElement.TryGetProperty("language", out var legacy)
+                     && legacy.ValueKind == System.Text.Json.JsonValueKind.String
+                     && Languages.Parse(legacy.GetString()) == Languages.English)
+                _speechLanguageChoice = Languages.English.Language.ToString();
+            if (_speechLanguageChoice is not null) _language = Languages.Parse(_speechLanguageChoice);
+            _uiLanguageChoice = ReadUiLanguage(doc.RootElement);
         }
         catch
         {
@@ -684,6 +810,29 @@ public partial class MainWindow : Window
         }
         TranscriptionService.BubbleMergeGap = TimeSpan.FromSeconds(MergeGapSlider.Value);
     }
+
+    /// <summary>
+    /// Выбранный кнопкой в заголовке язык интерфейса из settings.json; null — не выбирали.
+    /// Нужен до создания окна: от него зависят надписи разметки (<see cref="Loc.Resolve"/>).
+    /// </summary>
+    internal static string? ReadSavedUiLanguage()
+    {
+        try
+        {
+            if (!File.Exists(SettingsPath)) return null;
+            using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(SettingsPath));
+            return ReadUiLanguage(doc.RootElement);
+        }
+        catch
+        {
+            return null; // повреждённый settings.json — пусть решает язык системы
+        }
+    }
+
+    private static string? ReadUiLanguage(System.Text.Json.JsonElement root) =>
+        root.TryGetProperty("uiLanguage", out var ui) && ui.ValueKind == System.Text.Json.JsonValueKind.String
+            ? ui.GetString()
+            : null;
 
     private void SaveSettings()
     {
@@ -699,7 +848,8 @@ public partial class MainWindow : Window
                 ownerName = OwnerNameBox.Text,
                 diarizeSpeakers = DiarizeCheck.IsChecked == true,
                 transcriptSettingsOpen = TranscriptSettingsToggle.IsChecked == true,
-                language = _language.Language.ToString()
+                speechLanguage = _speechLanguageChoice,
+                uiLanguage = _uiLanguageChoice
             }));
         }
         catch
@@ -742,22 +892,24 @@ public partial class MainWindow : Window
     private static void SaveTranscript(string mp3Path, IReadOnlyList<TranscriptEntry> entries)
     {
         var sb = new StringBuilder();
-        sb.AppendLine($"# Транскрипт: {Path.GetFileNameWithoutExtension(mp3Path)}");
+        sb.AppendLine(Loc.T("# Транскрипт: ", "# Transcript: ") + Path.GetFileNameWithoutExtension(mp3Path));
         sb.AppendLine();
         foreach (var e in entries)
             sb.AppendLine($"**[{e.TimeLabel}] {e.Speaker}:** {e.Text}").AppendLine();
         File.WriteAllText(TranscriptPath(mp3Path), sb.ToString(), Encoding.UTF8);
     }
 
-    private static string TranscriptPath(string mp3Path) => mp3Path[..^4] + ".транскрипт.md";
-    private static string SummaryPath(string mp3Path) => mp3Path[..^4] + ".итоги.md";
+    // Имена файлов — на языке интерфейса, как и имя записи. Язык не меняется посреди записи
+    // (кнопка в заголовке заблокирована), так что mp3 и его транскрипт всегда называются в пару.
+    private static string TranscriptPath(string mp3Path) => mp3Path[..^4] + Loc.T(".транскрипт.md", ".transcript.md");
+    private static string SummaryPath(string mp3Path) => mp3Path[..^4] + Loc.T(".итоги.md", ".summary.md");
 
     private async void MakeSummary_Click(object sender, RoutedEventArgs e)
     {
         if (_finalTranscript is not { Count: > 0 } transcript || _lastFile is null) return;
         if (OllamaModels.SelectedItem is not string model || string.IsNullOrWhiteSpace(model))
         {
-            SetStatus("Выберите модель Ollama.", StatusKind.Error);
+            SetStatus(Loc.T("Выберите модель Ollama.", "Pick an Ollama model."), StatusKind.Error);
             return;
         }
 
@@ -768,7 +920,7 @@ public partial class MainWindow : Window
         MakeSummaryBtn.IsEnabled = false;
         RightTabs.SelectedIndex = 1;
         SummaryBox.Clear();
-        SetStatus($"Формирую итоги ({model})…", StatusKind.Progress);
+        SetStatus(Loc.T($"Формирую итоги ({model})…", $"Making the summary ({model})…"), StatusKind.Progress);
         BeginTask(determinate: false);
 
         try
@@ -788,14 +940,18 @@ public partial class MainWindow : Window
 
             File.WriteAllText(SummaryPath(_lastFile), sb.ToString(), Encoding.UTF8);
             if (outcome.HitContextLimit)
-                SetStatus($"Итоги оборвались: модель «{model}» упёрлась в окно контекста или в предел длины ответа. " +
-                          $"Сохранено: {Path.GetFileName(SummaryPath(_lastFile))}", StatusKind.Error);
+                SetStatus(Loc.T(
+                    $"Итоги оборвались: модель «{model}» упёрлась в окно контекста или в предел длины ответа. " +
+                    $"Сохранено: {Path.GetFileName(SummaryPath(_lastFile))}",
+                    $"The summary was cut off: “{model}” hit its context window or the reply length limit. " +
+                    $"Saved: {Path.GetFileName(SummaryPath(_lastFile))}"), StatusKind.Error);
             else
-                SetStatus($"Итоги сохранены: {Path.GetFileName(SummaryPath(_lastFile))}", StatusKind.Done);
+                SetStatus(Loc.T($"Итоги сохранены: {Path.GetFileName(SummaryPath(_lastFile))}",
+                    $"Summary saved: {Path.GetFileName(SummaryPath(_lastFile))}"), StatusKind.Done);
         }
         catch (OperationCanceledException)
         {
-            SetStatus("Формирование итогов отменено.");
+            SetStatus(Loc.T("Формирование итогов отменено.", "Summary cancelled."));
         }
         catch (Exception ex) when (ex is OllamaUnavailableException or OllamaModelMissingException)
         {
@@ -803,7 +959,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            SetStatus($"Ошибка итогов: {ex.Message}", StatusKind.Error);
+            SetStatus(Loc.T($"Ошибка итогов: {ex.Message}", $"Summary failed: {ex.Message}"), StatusKind.Error);
         }
         finally
         {
@@ -825,8 +981,11 @@ public partial class MainWindow : Window
             : null;
         StopIcon.Visibility = recording ? Visibility.Visible : Visibility.Collapsed;
         RecDot.Visibility = recording ? Visibility.Visible : Visibility.Hidden;
-        Hint.Text = recording ? "идёт запись — нажмите, чтобы остановить" : "нажмите, чтобы начать запись";
+        Hint.Text = recording
+            ? Loc.T("идёт запись — нажмите, чтобы остановить", "recording — click to stop")
+            : Loc.T("нажмите, чтобы начать запись", "click to start recording");
         SystemSource.IsEnabled = CaptureDevices.IsEnabled = SettingsPanel.IsEnabled = !recording;
+        UiLanguageBtn.IsEnabled = !recording;
         LanguageBox.IsEnabled = !recording;
         RenderDevices.IsEnabled = !recording && (SystemSource.SelectedItem as SystemSourceItem)?.Window is null;
         if (recording) OpenFolderBtn.Visibility = Visibility.Collapsed;
@@ -842,13 +1001,14 @@ public partial class MainWindow : Window
 
         if (_engine.Error is { } err)
         {
-            SetStatus($"Ошибка записи: {err.Message}", StatusKind.Error);
+            SetStatus(Loc.T($"Ошибка записи: {err.Message}", $"Recording error: {err.Message}"), StatusKind.Error);
             _ = StopRecordingAsync();
             return;
         }
         if (_stt?.Error is { } sttErr)
         {
-            SetStatus($"Транскрипция остановлена: {sttErr.Message}", StatusKind.Error);
+            SetStatus(Loc.T($"Транскрипция остановлена: {sttErr.Message}", $"Transcription stopped: {sttErr.Message}"),
+                StatusKind.Error);
         }
 
         Timer.Text = _engine.Elapsed.ToString(@"hh\:mm\:ss");
@@ -897,6 +1057,6 @@ public partial class MainWindow : Window
     /// <summary>Источник системного звука: всё устройство вывода (Window = null) или окно приложения.</summary>
     private sealed record SystemSourceItem(AudioWindow? Window)
     {
-        public override string ToString() => Window?.ToString() ?? "Всё устройство вывода";
+        public override string ToString() => Window?.ToString() ?? Loc.T("Всё устройство вывода", "Whole output device");
     }
 }
