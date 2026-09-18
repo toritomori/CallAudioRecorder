@@ -26,7 +26,14 @@ namespace CallAudioRecorder;
                     "IDisposable у окна никто бы не вызвал")]
 public partial class MainWindow : Window
 {
-    private const string DefaultOllamaModel = "qwen3.5:9b";
+    /// <summary>
+    /// Модель по умолчанию — text-сборка без блока для картинок: 5.7 ГБ вместо 6.6 ГБ у qwen3.5:9b,
+    /// и на 8 ГБ видеопамяти она целиком на GPU, а qwen3.5:9b уходила на 12 % на процессор.
+    /// Замер 18.09 на записи от 24.08 (123 реплики): коррекция 158 с против 391 с при тех же правках,
+    /// итоги часовой встречи 28 с против 42 с. GigaChat 3.1 Lightning быстрее (68 с), но сдвигала
+    /// реплики на соседние, рвала дефисы («что- то») и выдумывала задачи в итогах.
+    /// </summary>
+    private const string DefaultOllamaModel = "qwen3.5-text:9b";
 
     /// <summary>
     /// Границы высоты поля глоссария. Минимум — ровно три строки по 16 px плюс рамка:
@@ -829,7 +836,8 @@ public partial class MainWindow : Window
         BeginTask(determinate: false);
         BeginTask(determinate: true);
         TaskBar.Value = 0.42;
-        SetStatus(Loc.T("Исправляю текст (qwen3.5:9b): 220 из 526…", "Fixing the text (qwen3.5:9b): 220 of 526…"),
+        SetStatus(Loc.T($"Исправляю текст ({DefaultOllamaModel}): 220 из 526…",
+                $"Fixing the text ({DefaultOllamaModel}): 220 of 526…"),
             StatusKind.Progress);
     }
 
