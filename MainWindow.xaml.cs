@@ -57,6 +57,12 @@ public partial class MainWindow : Window
     private string? _speechLanguageChoice;
 
     /// <summary>
+    /// Модели, выбранные в прежнем окне до смены языка. Список моделей в новом окне
+    /// приходит асинхронно, уже после <see cref="AdoptSession"/>, — выбор применяется при заполнении.
+    /// </summary>
+    private string? _adoptedTranscriptModel, _adoptedSummaryModel;
+
+    /// <summary>
     /// Язык интерфейса, выбранный кнопкой в заголовке: «Russian»/«English», null — не выбирали,
     /// решает язык Windows. Пока выбора нет, в settings.json и не пишем ничего своего: иначе
     /// первый же SaveSettings навсегда закрепил бы язык машины, на которой приложение запустили.
@@ -225,22 +231,24 @@ public partial class MainWindow : Window
         try
         {
             var models = await _ollama.ListModelsAsync();
-            FillModels(TranscriptModels, models);
-            FillModels(OllamaModels, models);
+            FillModels(TranscriptModels, models, _adoptedTranscriptModel);
+            FillModels(OllamaModels, models, _adoptedSummaryModel);
         }
         catch (OllamaUnavailableException)
         {
             // Ollama может подняться и позже — оставляем модель по умолчанию, чтобы было что выбрать.
-            FillModels(TranscriptModels, new[] { DefaultOllamaModel });
-            FillModels(OllamaModels, new[] { DefaultOllamaModel });
+            FillModels(TranscriptModels, new[] { DefaultOllamaModel }, _adoptedTranscriptModel);
+            FillModels(OllamaModels, new[] { DefaultOllamaModel }, _adoptedSummaryModel);
         }
     }
 
-    private static void FillModels(ComboBox box, string[] models)
+    /// <param name="preferred">Модель, выбранная в прежнем окне до смены языка; null — по умолчанию.</param>
+    private static void FillModels(ComboBox box, string[] models, string? preferred)
     {
         box.Items.Clear();
         foreach (var m in models) box.Items.Add(m);
-        box.SelectedItem = models.FirstOrDefault(m => m.StartsWith(DefaultOllamaModel, StringComparison.Ordinal))
+        box.SelectedItem = (preferred is not null && models.Contains(preferred) ? preferred : null)
+                           ?? models.FirstOrDefault(m => m.StartsWith(DefaultOllamaModel, StringComparison.Ordinal))
                            ?? (models.Length > 0 ? models[0] : null);
     }
 
@@ -694,9 +702,32 @@ public partial class MainWindow : Window
         Close();
     }
 
-    /// <summary>Переносит в новое окно то, что не лежит в settings.json: папку, микшер и последнюю запись.</summary>
+    /// <summary>
+    /// Переносит в новое окно то, что не лежит в settings.json: источники, модели, папку,
+    /// микшер и последнюю запись. Без этого новое окно молча возвращалось к системным
+    /// умолчаниям — и следующая запись шла не с тем микрофоном и не из того приложения.
+    /// </summary>
     private void AdoptSession(MainWindow old)
     {
+        // Устройства и окна — по идентификатору: элементы списков в новом окне свои.
+        SelectDevice(RenderDevices, old.RenderDevices);
+        SelectDevice(CaptureDevices, old.CaptureDevices);
+        if ((old.SystemSource.SelectedItem as SystemSourceItem)?.Window is { } window)
+        {
+            // Приложение могло закрыться — тогда остаётся «всё устройство вывода».
+            var same = SystemSource.Items.OfType<SystemSourceItem>()
+                .FirstOrDefault(item => item.Window?.ProcessId == window.ProcessId);
+            if (same is not null) SystemSource.SelectedItem = same;
+        }
+
+        _adoptedTranscriptModel = old.TranscriptModels.SelectedItem as string;
+        _adoptedSummaryModel = old.OllamaModels.SelectedItem as string;
+        // Если список моделей уже успел заполниться, выбор применяем сразу.
+        if (_adoptedTranscriptModel is not null && TranscriptModels.Items.Contains(_adoptedTranscriptModel))
+            TranscriptModels.SelectedItem = _adoptedTranscriptModel;
+        if (_adoptedSummaryModel is not null && OllamaModels.Items.Contains(_adoptedSummaryModel))
+            OllamaModels.SelectedItem = _adoptedSummaryModel;
+
         OutputFolder.Text = old.OutputFolder.Text;
         Br128.IsChecked = old.Br128.IsChecked;
         Br192.IsChecked = old.Br192.IsChecked;
@@ -717,6 +748,14 @@ public partial class MainWindow : Window
         }
         SummaryBox.Text = old.SummaryBox.Text;
         SetStatus(Loc.T("Язык интерфейса: русский.", "Interface language: English."));
+    }
+
+    /// <summary>Выбирает в <paramref name="box"/> то же устройство, что выбрано в <paramref name="from"/>.</summary>
+    private static void SelectDevice(ComboBox box, ComboBox from)
+    {
+        if (from.SelectedItem is not DeviceItem selected) return;
+        var same = box.Items.OfType<DeviceItem>().FirstOrDefault(item => item.Device.ID == selected.Device.ID);
+        if (same is not null) box.SelectedItem = same;
     }
 
     /// <summary>
@@ -892,17 +931,28 @@ public partial class MainWindow : Window
     private static void SaveTranscript(string mp3Path, IReadOnlyList<TranscriptEntry> entries)
     {
         var sb = new StringBuilder();
-        sb.AppendLine(Loc.T("# Транскрипт: ", "# Transcript: ") + Path.GetFileNameWithoutExtension(mp3Path));
+        sb.AppendLine((RussianNames(mp3Path) ? "# Транскрипт: " : "# Transcript: ") +
+                      Path.GetFileNameWithoutExtension(mp3Path));
         sb.AppendLine();
         foreach (var e in entries)
             sb.AppendLine($"**[{e.TimeLabel}] {e.Speaker}:** {e.Text}").AppendLine();
         File.WriteAllText(TranscriptPath(mp3Path), sb.ToString(), Encoding.UTF8);
     }
 
-    // Имена файлов — на языке интерфейса, как и имя записи. Язык не меняется посреди записи
-    // (кнопка в заголовке заблокирована), так что mp3 и его транскрипт всегда называются в пару.
-    private static string TranscriptPath(string mp3Path) => mp3Path[..^4] + Loc.T(".транскрипт.md", ".transcript.md");
-    private static string SummaryPath(string mp3Path) => mp3Path[..^4] + Loc.T(".итоги.md", ".summary.md");
+    /// <summary>
+    /// Русские ли имена у файлов этой записи. Решает имя самого mp3, а не текущий язык
+    /// интерфейса: смена языка переносит последнюю запись в новое окно (<see cref="AdoptSession"/>),
+    /// и по текущему языку правка записи «Запись_X» ушла бы в новый «Запись_X.transcript.md»,
+    /// оставив исходный «.транскрипт.md» неисправленным.
+    /// </summary>
+    private static bool RussianNames(string mp3Path) =>
+        Path.GetFileName(mp3Path).StartsWith("Запись_", StringComparison.Ordinal);
+
+    private static string TranscriptPath(string mp3Path) =>
+        mp3Path[..^4] + (RussianNames(mp3Path) ? ".транскрипт.md" : ".transcript.md");
+
+    private static string SummaryPath(string mp3Path) =>
+        mp3Path[..^4] + (RussianNames(mp3Path) ? ".итоги.md" : ".summary.md");
 
     private async void MakeSummary_Click(object sender, RoutedEventArgs e)
     {
