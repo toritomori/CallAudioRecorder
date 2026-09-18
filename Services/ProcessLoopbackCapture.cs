@@ -140,17 +140,18 @@ public sealed class ProcessLoopbackCapture : IWaveIn
             var handler = new ActivationHandler();
             int hr = ActivateAudioInterfaceAsync(VirtualLoopbackDevice, IID_IAudioClient,
                 propVariant, handler, out var operation);
-            if (hr != 0) throw Unsupported(hr, "не удалось начать активацию");
+            if (hr != 0) throw Unsupported(hr, Loc.T("не удалось начать активацию", "activation could not start"));
 
             if (!handler.Completed.WaitOne(TimeSpan.FromSeconds(5)))
-                throw new TimeoutException("Windows не ответила на запрос захвата звука приложения.");
+                throw new TimeoutException(Loc.T("Windows не ответила на запрос захвата звука приложения.",
+                    "Windows did not answer the app audio capture request."));
 
             operation.GetActivateResult(out int activateHr, out object activated);
             // Операцию активации нужно отпустить сразу: пока её COM-обёртка жива, аудиодвижок
             // считает активацию незавершённой и следующая попытка в этом же процессе
             // падает с E_UNEXPECTED (проверено — вторая запись подряд не начиналась).
             Marshal.ReleaseComObject(operation);
-            if (activateHr != 0 || activated is null) throw Unsupported(activateHr, "активация отклонена");
+            if (activateHr != 0 || activated is null) throw Unsupported(activateHr, Loc.T("активация отклонена", "activation rejected"));
 
             var client = (IAudioClient)activated;
             var waveFormat = new WaveFormatEx
@@ -165,11 +166,13 @@ public sealed class ProcessLoopbackCapture : IWaveIn
             };
             int initHr = client.Initialize(AudioClientSharedMode,
                 StreamFlagsLoopback | StreamFlagsEventCallback, BufferDuration, 0, ref waveFormat, IntPtr.Zero);
-            if (initHr != 0) throw Unsupported(initHr, "аудиодвижок не принял формат записи");
+            if (initHr != 0) throw Unsupported(initHr, Loc.T("аудиодвижок не принял формат записи",
+                "the audio engine rejected the capture format"));
 
             var captureId = IID_IAudioCaptureClient;
             if (client.GetService(ref captureId, out object captureObj) != 0 || captureObj is null)
-                throw new InvalidOperationException("Не удалось получить поток захвата звука приложения.");
+                throw new InvalidOperationException(Loc.T("Не удалось получить поток захвата звука приложения.",
+                    "Could not get the app audio capture stream."));
 
             return (client, (IAudioCaptureClient)captureObj);
         }
@@ -180,9 +183,11 @@ public sealed class ProcessLoopbackCapture : IWaveIn
         }
     }
 
-    private static NotSupportedException Unsupported(int hr, string what) => new NotSupportedException(
+    private static NotSupportedException Unsupported(int hr, string what) => new NotSupportedException(Loc.T(
         $"Запись звука отдельного приложения недоступна ({what}, код 0x{hr:X8}). " +
-        "Нужна Windows 10 22H2 или новее; выберите вместо этого устройство вывода.");
+        "Нужна Windows 10 22H2 или новее; выберите вместо этого устройство вывода.",
+        $"Recording a single app is unavailable ({what}, code 0x{hr:X8}). " +
+        "It needs Windows 10 22H2 or later; pick an output device instead."));
 
     public void StartRecording()
     {

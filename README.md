@@ -6,15 +6,19 @@ A Windows desktop app that records a call to MP3 (system audio + microphone), pr
 
 ![.NET](https://img.shields.io/badge/.NET-10.0--windows-512BD4) ![WPF](https://img.shields.io/badge/UI-WPF-blue) ![offline](https://img.shields.io/badge/STT-offline-success)
 
-> The interface is in Russian. The transcript and the meeting notes follow the language you record in: pick Russian or English before you start.
+## Interface language
+
+The app comes in **English and Russian**. On first launch it follows the Windows display language: on a Russian Windows the interface is Russian, on **any other** language it is English. The **RU / EN** button in the title bar switches it at any time (not while recording or while a model is working); the choice is saved to `settings.json` and wins over the system language from then on.
+
+The interface language is independent of the speech language: an English interface can transcribe a Russian meeting and vice versa. Until you pick a speech language in the list yourself, it follows the interface: an English interface starts with English recognition, and switching the interface with RU / EN switches recognition too. Once picked by hand, the speech language is remembered. The interface language also names the output files (`Recording_….mp3` / `Запись_….mp3`, see below).
 
 ## Features
 
 - **Two sources at once** — system audio (what you hear) plus the microphone, mixed into a single MP3 at 128/192/320 kbps, with separate volume sliders and level meters.
 - **Single-app audio** — instead of the whole output device you can record one window (Zoom, a browser, Telegram), so notifications and music from other programs stay out of the recording. Windows currently playing audio are marked with a «♪» in the source list.
-- **Live transcript** — utterances appear while you are still talking, split by speaker: yours are labelled «Я» (me), the far end «Собеседник» (the other party).
+- **Live transcript** — utterances appear while you are still talking, split by speaker: yours are labelled "Me", the far end "Speaker" (in Russian mode — «Я» and «Собеседник»).
 - **Russian and English** — the language is chosen before recording: Russian runs on GigaAM v3, English on Parakeet TDT 0.6B. In English mode the speakers are "Me" and "Speaker N", and the notes and text correction come out in English too. The model for a language is downloaded the first time you pick it.
-- **Voice-based speaker separation** — with several people on the other end, utterances are marked «Собеседник 1», «Собеседник 2», … (diarization by voice embedding, toggled by a checkbox).
+- **Voice-based speaker separation** — with several people on the other end, utterances are marked "Speaker 1", "Speaker 2", … («Собеседник 1», «Собеседник 2» in Russian mode; diarization by voice embedding, toggled by a checkbox).
 - **Meeting glossary** — a list of terms and names that helps both recognition and the later text correction.
 - **LLM text correction** — restores the English terms that a Russian acoustic model inevitably mangles («эйпиай» → «API», «дед лайн» → «deadline»).
 - **Meeting notes** — summary, decisions, a task table with owners and deadlines, open questions and next steps; streamed as they are generated and saved to a file.
@@ -38,28 +42,28 @@ The first time transcription is enabled, the app downloads the models itself (~2
 
 ## Usage
 
-1. Pick where the other party's audio comes from: «Всё устройство вывода» (the whole output device — then choose the speakers/headset below) or the window of a specific app; the list is rebuilt every time you open it. Then pick the microphone. The system defaults are preselected.
+1. Pick where the other party's audio comes from: **Whole output device** (then choose the speakers/headset below) or the window of a specific app; the list is rebuilt every time you open it. Then pick the microphone. The system defaults are preselected.
 2. Adjust channel volumes, bitrate and the output folder if needed.
-3. Leave «Живой транскрипт» (live transcript) and «Различать собеседников по голосу» (tell speakers apart by voice) enabled if you want a transcript, and pick the spoken language — «Русский» or English.
+3. Leave **Live transcript** and **Tell speakers apart by voice** enabled if you want a transcript, and pick the **Speech language** — English or Русский (Russian).
 4. Type the terms and names that will come up during the meeting into the glossary, comma-separated. Drag the strip below the box to make it taller when the list grows; double-click the strip to reset it.
-5. Press the big record button. The timer and the level meters confirm audio is flowing; utterances show up on the «Транскрипт» tab.
+5. Press the big record button. The timer and the level meters confirm audio is flowing; utterances show up on the **Transcript** tab.
 6. Stop with the same button. The app finalizes the MP3 and recognizes the remaining speech.
-7. The settings block above the feed folds away under the «НАСТРОЙКИ РАСШИФРОВКИ» header — folded, it hands almost the whole right column to the transcript.
-8. **«Определить участников»** (name the speakers) — replaces the «Собеседник N» labels with the names said in the conversation.
-9. **«Исправить текст»** (fix text) — runs the transcript through Ollama and rewrites it with the corrected version. Both steps use the model picked on the «Транскрипт» tab itself — it need not match the one used for the summary.
-10. **«Сформировать итоги»** (make notes, on the «Итоги» tab) — builds the structured meeting summary.
+7. The settings block above the feed folds away under the **TRANSCRIPT SETTINGS** header — folded, it hands almost the whole right column to the transcript.
+8. **Name speakers** — replaces the "Speaker N" labels with the names said in the conversation.
+9. **Fix text** — runs the transcript through Ollama and rewrites it with the corrected version. Both steps use the model picked on the **Transcript** tab itself — it need not match the one used for the summary.
+10. **Make summary** (on the **Summary** tab) — builds the structured meeting summary.
 
 ## Output files
 
-Next to the recording, in the folder you chose:
+Next to the recording, in the folder you chose (names follow the interface language):
 
 ```
-Запись_2026-07-24_15-30-00.mp3
-Запись_2026-07-24_15-30-00.транскрипт.md
-Запись_2026-07-24_15-30-00.итоги.md
+Recording_2026-07-24_15-30-00.mp3            Запись_2026-07-24_15-30-00.mp3
+Recording_2026-07-24_15-30-00.transcript.md  Запись_2026-07-24_15-30-00.транскрипт.md
+Recording_2026-07-24_15-30-00.summary.md     Запись_2026-07-24_15-30-00.итоги.md
 ```
 
-UI settings (utterance merge gap, glossary, diarization) live in `%LOCALAPPDATA%\CallAudioRecorder\settings.json`.
+UI settings (utterance merge gap, glossary, diarization, interface language `uiLanguage`) live in `%LOCALAPPDATA%\CallAudioRecorder\settings.json`.
 
 ## How it works
 
@@ -87,6 +91,7 @@ RecordingEngine ──► MP3 (48 kHz stereo)
 | `Services/SummaryComposer.cs` | Notes that respect the model's window: a short meeting goes in one request, a long one is condensed part by part and summarized from those condensates. |
 | `Services/SummaryPrompt.cs` | The meeting-notes prompt with its fixed section structure. |
 | `Services/ModelDownloader.cs` | Downloads models from HuggingFace (plus a mirror) and GitHub releases, validating them by size. |
+| `Services/Loc.cs`, `TrExtension.cs` | Interface language: both strings side by side (`Loc.T("…", "…")` in code, `{l:Tr '…', En='…'}` in XAML) and the default taken from the Windows display language. |
 | `MainWindow.xaml(.cs)` | Dark chromeless UI, code-behind (no MVVM). |
 
 ### Models
@@ -100,7 +105,7 @@ RecordingEngine ──► MP3 (48 kHz stereo)
 
 ### Known limitations
 
-- In Russian mode English terms come out transliterated into Cyrillic, phonetically: the GigaAM vocabulary barely contains Latin script. No ASR setting fixes this — LLM correction («Исправить текст») does.
+- In Russian mode English terms come out transliterated into Cyrillic, phonetically: the GigaAM vocabulary barely contains Latin script. No ASR setting fixes this — LLM correction (**Fix text**) does.
 - The recognition language is fixed for the whole recording: mixed Russian/English speech in one call is not separated — record in whichever language dominates.
 - Single-app recording relies on Windows Application Loopback; on very old Windows 10 builds it may be unavailable, in which case the app says so when you start recording and the output-device route remains.
 - Diarization confuses similar voices, and segments shorter than 2 s never create a new speaker — short utterances stick to the nearest profile.
@@ -132,8 +137,9 @@ CallAudioRecorder.exe --fix-test <log-file> <model> [ru|en]
 # Notes from a synthetic transcript of a long meeting — context window check
 CallAudioRecorder.exe --summary-long-test <log-file> <model> [minutes] [ru|en]
 
-# Render the window to PNG and check the layout for overlapping blocks
-CallAudioRecorder.exe --ui-shot <png-file> <log-file>
+# Render the window to PNG and check the layout for overlapping blocks;
+# sample fills the window with sample utterances, ru|en picks the interface language
+CallAudioRecorder.exe --ui-shot <png-file> <log-file> [width] [height] [sample] [ru|en]
 
 # Single-app audio capture; PID=0 prints the list of candidate windows
 CallAudioRecorder.exe --proc-loopback-test <log-file> [PID] [seconds] [all|direct|engine]

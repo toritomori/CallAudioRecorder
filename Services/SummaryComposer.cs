@@ -53,7 +53,8 @@ public static class SummaryComposer
             var parts = new List<string>(chunks.Count);
             for (int i = 0; i < chunks.Count; i++)
             {
-                stage?.Report($"Конспектирую часть {i + 1} из {chunks.Count}…");
+                stage?.Report(Loc.T($"Конспектирую часть {i + 1} из {chunks.Count}…",
+                    $"Condensing part {i + 1} of {chunks.Count}…"));
                 var partOutcome = new ChatOutcome();
                 var part = await ollama.ChatAsync(
                     model, SummaryPrompt.PartSystemFor(language),
@@ -64,7 +65,8 @@ public static class SummaryComposer
                 // в конспект, в итоги уже не вернётся. Делим часть пополам и конспектируем заново.
                 if (partOutcome.HitContextLimit && chunks[i].Count > 1)
                 {
-                    stage?.Report($"Конспект части {i + 1} не уместился — делю её пополам…");
+                    stage?.Report(Loc.T($"Конспект части {i + 1} не уместился — делю её пополам…",
+                        $"Part {i + 1} did not fit — splitting it in half…"));
                     int half = chunks[i].Count / 2;
                     chunks.Insert(i + 1, chunks[i].GetRange(half, chunks[i].Count - half));
                     chunks[i] = chunks[i].GetRange(0, half);
@@ -75,7 +77,7 @@ public static class SummaryComposer
             }
 
             parts = await CondenseAsync(ollama, model, parts, budget, partBudget, stage, language, glossary, ct).ConfigureAwait(false);
-            stage?.Report("Свожу итоги встречи…");
+            stage?.Report(Loc.T("Свожу итоги встречи…", "Putting the meeting summary together…"));
             finalMessage = SummaryPrompt.BuildFromParts(parts, language, glossary);
         }
 
@@ -132,7 +134,8 @@ public static class SummaryComposer
             var condensed = new List<string>(groups.Count);
             for (int i = 0; i < groups.Count; i++)
             {
-                stage?.Report($"Сжимаю конспекты: {i + 1} из {groups.Count}…");
+                stage?.Report(Loc.T($"Сжимаю конспекты: {i + 1} из {groups.Count}…",
+                    $"Merging part notes: {i + 1} of {groups.Count}…"));
                 var mergeOutcome = new ChatOutcome();
                 var merged = await ollama.ChatAsync(
                     model, SummaryPrompt.PartSystemFor(language),

@@ -33,7 +33,9 @@ internal static class TextChecks
             }
 
             var files = Directory.Exists(source)
-                ? Directory.GetFiles(source, "*.транскрипт.md")
+                // Имя файла следует языку интерфейса, в котором велась запись
+                ? Directory.GetFiles(source, "*.транскрипт.md").Concat(Directory.GetFiles(source, "*.transcript.md"))
+                    .ToArray()
                 : new[] { source };
 
             var replacements = new List<(string From, string To)>();

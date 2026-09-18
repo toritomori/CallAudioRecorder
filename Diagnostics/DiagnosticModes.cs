@@ -51,11 +51,12 @@ internal static class DiagnosticModes
         // --canon-test <лог> <файл .транскрипт.md или папка> — канонизация терминов и версий на корпусе
         ["--canon-test"] = new(3, a => TextChecks.Canon(a[1], a[2])),
 
-        // --ui-shot <png> <лог> [ширина] [высота] [sample] — снимок окна и проверка вёрстки на наложения;
+        // --ui-shot <png> <лог> [ширина] [высота] [sample] [ru|en] — снимок окна и проверка вёрстки на наложения;
         // размер задают, чтобы проверить тянущееся окно на краях диапазона,
-        // sample — заполнить окно образцом реплик и полосой длинной задачи
+        // sample — заполнить окно образцом реплик и полосой длинной задачи,
+        // ru/en — язык интерфейса (без него — как у приложения)
         ["--ui-shot"] = new(3, a => UiShot.Run(a[1], a[2], SizeArg(a, 3), SizeArg(a, 4),
-            a.Length > 5 && a[5].StartsWith("s", StringComparison.OrdinalIgnoreCase))),
+            a.Length > 5 && a[5].StartsWith("s", StringComparison.OrdinalIgnoreCase), UiLanguageArg(a, 6))),
 
 #if DEBUG
         // --stt-test <лог> <wav> [ru|en] — RTF распознавания
@@ -97,6 +98,13 @@ internal static class DiagnosticModes
         args.Length > index && float.TryParse(args[index], NumberStyles.Float, CultureInfo.InvariantCulture, out var value)
             ? value
             : null;
+
+    /// <summary>Язык интерфейса для <c>--ui-shot</c>: en → английский, ru → русский, иначе как у приложения.</summary>
+    private static bool? UiLanguageArg(string[] args, int index) =>
+        args.Length <= index ? null
+        : args[index].StartsWith("en", StringComparison.OrdinalIgnoreCase) ? true
+        : args[index].StartsWith("ru", StringComparison.OrdinalIgnoreCase) ? false
+        : null;
 
     /// <summary>Язык из аргументов командной строки: «en»/«english» → английский, иначе русский.</summary>
     private static LanguageProfile LanguageArg(string[] args, int index) =>
