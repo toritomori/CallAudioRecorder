@@ -57,10 +57,16 @@ public partial class MainWindow : Window
     private string? _speechLanguageChoice;
 
     /// <summary>
-    /// Модели, выбранные в прежнем окне до смены языка. Список моделей в новом окне
-    /// приходит асинхронно, уже после <see cref="AdoptSession"/>, — выбор применяется при заполнении.
+    /// Модели, выбранные вручную для правки транскрипта и для итогов (<c>transcriptModel</c> /
+    /// <c>summaryModel</c> в settings.json); null — не выбирали, берётся <see cref="DefaultOllamaModel"/>.
+    /// Хранятся отдельно от SelectedItem: список моделей приходит от Ollama асинхронно, и пока он
+    /// не пришёл — или Ollama не запущен и в списке одна модель по умолчанию, — выбор в списке
+    /// не равен сохранённому, а затирать сохранённый умолчанием нельзя.
     /// </summary>
-    private string? _adoptedTranscriptModel, _adoptedSummaryModel;
+    private string? _transcriptModel, _summaryModel;
+
+    /// <summary>Список моделей заполняется программно — это не выбор пользователя.</summary>
+    private bool _fillingModels;
 
     /// <summary>
     /// Язык интерфейса, выбранный кнопкой в заголовке: «Russian»/«English», null — не выбирали,
@@ -231,25 +237,46 @@ public partial class MainWindow : Window
         try
         {
             var models = await _ollama.ListModelsAsync();
-            FillModels(TranscriptModels, models, _adoptedTranscriptModel);
-            FillModels(OllamaModels, models, _adoptedSummaryModel);
+            FillModels(TranscriptModels, models, _transcriptModel);
+            FillModels(OllamaModels, models, _summaryModel);
         }
         catch (OllamaUnavailableException)
         {
-            // Ollama может подняться и позже — оставляем модель по умолчанию, чтобы было что выбрать.
-            FillModels(TranscriptModels, new[] { DefaultOllamaModel }, _adoptedTranscriptModel);
-            FillModels(OllamaModels, new[] { DefaultOllamaModel }, _adoptedSummaryModel);
+            // Ollama может подняться и позже — оставляем в списке сохранённый выбор и модель
+            // по умолчанию, чтобы было что выбрать и чтобы запрос ушёл к той модели, что выбрана.
+            FillModels(TranscriptModels, Fallback(_transcriptModel), _transcriptModel);
+            FillModels(OllamaModels, Fallback(_summaryModel), _summaryModel);
+        }
+
+        static string[] Fallback(string? saved) =>
+            saved is null || saved == DefaultOllamaModel ? [DefaultOllamaModel] : [saved, DefaultOllamaModel];
+    }
+
+    /// <param name="preferred">Сохранённый выбор; нет его в списке (модель удалили) — по умолчанию.</param>
+    private void FillModels(ComboBox box, string[] models, string? preferred)
+    {
+        _fillingModels = true;
+        try
+        {
+            box.Items.Clear();
+            foreach (var m in models) box.Items.Add(m);
+            box.SelectedItem = (preferred is not null && models.Contains(preferred) ? preferred : null)
+                               ?? models.FirstOrDefault(m => m.StartsWith(DefaultOllamaModel, StringComparison.Ordinal))
+                               ?? (models.Length > 0 ? models[0] : null);
+        }
+        finally
+        {
+            _fillingModels = false;
         }
     }
 
-    /// <param name="preferred">Модель, выбранная в прежнем окне до смены языка; null — по умолчанию.</param>
-    private static void FillModels(ComboBox box, string[] models, string? preferred)
+    /// <summary>Ручной выбор модели запоминается сразу, а не при выходе: процесс могут и убить.</summary>
+    private void Model_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        box.Items.Clear();
-        foreach (var m in models) box.Items.Add(m);
-        box.SelectedItem = (preferred is not null && models.Contains(preferred) ? preferred : null)
-                           ?? models.FirstOrDefault(m => m.StartsWith(DefaultOllamaModel, StringComparison.Ordinal))
-                           ?? (models.Length > 0 ? models[0] : null);
+        if (_fillingModels || !IsLoaded || sender is not ComboBox { SelectedItem: string model }) return;
+        if (ReferenceEquals(sender, TranscriptModels)) _transcriptModel = model;
+        else _summaryModel = model;
+        SaveSettings();
     }
 
     private async void StartStop_Click(object sender, RoutedEventArgs e)
@@ -703,9 +730,10 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Переносит в новое окно то, что не лежит в settings.json: источники, модели, папку,
-    /// микшер и последнюю запись. Без этого новое окно молча возвращалось к системным
-    /// умолчаниям — и следующая запись шла не с тем микрофоном и не из того приложения.
+    /// Переносит в новое окно то, что не лежит в settings.json: источники, папку, микшер
+    /// и последнюю запись. Без этого новое окно молча возвращалось к системным умолчаниям —
+    /// и следующая запись шла не с тем микрофоном и не из того приложения. Модели Ollama
+    /// переносить не нужно: они в settings.json, а старое окно сохранило его перед созданием нового.
     /// </summary>
     private void AdoptSession(MainWindow old)
     {
@@ -719,14 +747,6 @@ public partial class MainWindow : Window
                 .FirstOrDefault(item => item.Window?.ProcessId == window.ProcessId);
             if (same is not null) SystemSource.SelectedItem = same;
         }
-
-        _adoptedTranscriptModel = old.TranscriptModels.SelectedItem as string;
-        _adoptedSummaryModel = old.OllamaModels.SelectedItem as string;
-        // Если список моделей уже успел заполниться, выбор применяем сразу.
-        if (_adoptedTranscriptModel is not null && TranscriptModels.Items.Contains(_adoptedTranscriptModel))
-            TranscriptModels.SelectedItem = _adoptedTranscriptModel;
-        if (_adoptedSummaryModel is not null && OllamaModels.Items.Contains(_adoptedSummaryModel))
-            OllamaModels.SelectedItem = _adoptedSummaryModel;
 
         OutputFolder.Text = old.OutputFolder.Text;
         Br128.IsChecked = old.Br128.IsChecked;
@@ -842,6 +862,8 @@ public partial class MainWindow : Window
                 _speechLanguageChoice = Languages.English.Language.ToString();
             if (_speechLanguageChoice is not null) _language = Languages.Parse(_speechLanguageChoice);
             _uiLanguageChoice = ReadUiLanguage(doc.RootElement);
+            _transcriptModel = ReadString(doc.RootElement, "transcriptModel");
+            _summaryModel = ReadString(doc.RootElement, "summaryModel");
         }
         catch
         {
@@ -868,9 +890,12 @@ public partial class MainWindow : Window
         }
     }
 
-    private static string? ReadUiLanguage(System.Text.Json.JsonElement root) =>
-        root.TryGetProperty("uiLanguage", out var ui) && ui.ValueKind == System.Text.Json.JsonValueKind.String
-            ? ui.GetString()
+    private static string? ReadUiLanguage(System.Text.Json.JsonElement root) => ReadString(root, "uiLanguage");
+
+    /// <summary>Строковое поле settings.json; нет его, null или не строка — null.</summary>
+    private static string? ReadString(System.Text.Json.JsonElement root, string name) =>
+        root.TryGetProperty(name, out var value) && value.ValueKind == System.Text.Json.JsonValueKind.String
+            ? value.GetString()
             : null;
 
     private void SaveSettings()
@@ -888,7 +913,9 @@ public partial class MainWindow : Window
                 diarizeSpeakers = DiarizeCheck.IsChecked == true,
                 transcriptSettingsOpen = TranscriptSettingsToggle.IsChecked == true,
                 speechLanguage = _speechLanguageChoice,
-                uiLanguage = _uiLanguageChoice
+                uiLanguage = _uiLanguageChoice,
+                transcriptModel = _transcriptModel,
+                summaryModel = _summaryModel
             }));
         }
         catch
