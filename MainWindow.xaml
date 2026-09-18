@@ -317,7 +317,7 @@
                                          складных настроек: в строке кнопок ему не хватало ширины
                                          и имя модели обрезалось, а свёрнутые настройки отобрали бы
                                          выбор совсем. Место в строке заголовка всё равно пустовало. -->
-                                    <ComboBox Grid.Column="1" x:Name="TranscriptModels" Style="{StaticResource GhostCombo}"
+                                    <ComboBox Grid.Column="1" x:Name="TranscriptModels" Style="{StaticResource GhostCombo}" SelectionChanged="Model_SelectionChanged"
                                               VerticalAlignment="Center" MinWidth="120" MaxWidth="260"
                                               ToolTip="{l:Tr 'Модель Ollama для «Определить участников» и «Исправить текст». Выбор во вкладке «Итоги» независим.', En='Ollama model for Name speakers and Fix text. The Summary tab has its own, independent choice.'}"/>
                                 </Grid>
@@ -425,7 +425,7 @@
                                         <ColumnDefinition Width="Auto"/>
                                         <ColumnDefinition Width="Auto"/>
                                     </Grid.ColumnDefinitions>
-                                    <ComboBox Grid.Column="0" x:Name="OllamaModels" Style="{StaticResource DarkCombo}"
+                                    <ComboBox Grid.Column="0" x:Name="OllamaModels" Style="{StaticResource DarkCombo}" SelectionChanged="Model_SelectionChanged"
                                               Height="34"/>
                                     <Button Grid.Column="1" x:Name="MakeSummaryBtn" Style="{StaticResource ActionButton}"
                                             Margin="8,0,0,0" Click="MakeSummary_Click" IsEnabled="False">
